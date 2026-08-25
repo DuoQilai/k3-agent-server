@@ -1,0 +1,24 @@
+[Unit]
+Description=SpacemiT K3 local model API
+Documentation=https://github.com/DuoQilai/spacemit-k3-ai-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:%h/.local/node/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/usr/bin/test -s %h/.cache/models/llm/deepseek-r1-distill-qwen-1.5b-q4_0.gguf
+ExecStart=/usr/bin/env llama-server \
+  -m %h/.cache/models/llm/deepseek-r1-distill-qwen-1.5b-q4_0.gguf \
+  -t 8 \
+  -c 2048 \
+  --host 127.0.0.1 \
+  --port 8080
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
