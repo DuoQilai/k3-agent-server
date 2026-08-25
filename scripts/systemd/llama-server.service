@@ -1,6 +1,6 @@
 [Unit]
 Description=SpacemiT K3 local model API
-Documentation=https://github.com/DuoQilai/spacemit-k3-ai-server
+Documentation=https://github.com/DuoQilai/k3-agent-server
 After=network-online.target
 Wants=network-online.target
 

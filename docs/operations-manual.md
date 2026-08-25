@@ -56,7 +56,7 @@ DSH Web UI: healthy
 systemd 会自动启动两个服务。先在 K3 服务设备执行：
 
 ```bash
-cd spacemit-k3-ai-server
+cd k3-agent-server
 bash scripts/status.sh
 ```
 

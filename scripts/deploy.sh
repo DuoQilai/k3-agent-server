@@ -154,7 +154,7 @@ install_dsh() {
 EOF
 
   cat > "$DSH_RUNTIME_DIR/pnpm-workspace.yaml" <<'EOF'
-# Managed by spacemit-k3-ai-server.
+# Managed by k3-agent-server.
 allowBuilds:
   '@deepseek-ai/dsh-subprocess-local': true
   '@google/genai': true

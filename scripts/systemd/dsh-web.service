@@ -1,6 +1,6 @@
 [Unit]
 Description=DeepSeek Harness Agent service
-Documentation=https://github.com/DuoQilai/spacemit-k3-ai-server
+Documentation=https://github.com/DuoQilai/k3-agent-server
 After=network-online.target llama-server.service
 Wants=network-online.target llama-server.service
 

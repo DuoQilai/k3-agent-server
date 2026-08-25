@@ -5,5 +5,4 @@ logs/
 # Local runtime and generated artifacts
 .env
 *.log
-results/*
-!results/.gitkeep
+results/

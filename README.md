@@ -27,8 +27,8 @@ K3 Pico-ITX（Bianbu Linux）
 在 K3 服务设备上执行：
 
 ```bash
-git clone https://github.com/DuoQilai/spacemit-k3-ai-server.git
-cd spacemit-k3-ai-server
+git clone https://github.com/DuoQilai/k3-agent-server.git
+cd k3-agent-server
 bash scripts/deploy.sh
 ```
 
@@ -69,7 +69,7 @@ bash scripts/status.sh
 在 K3 服务设备上检查状态：
 
 ```bash
-cd spacemit-k3-ai-server
+cd k3-agent-server
 bash scripts/status.sh
 ```
 
@@ -147,7 +147,7 @@ journalctl --user -u llama-server.service -u dsh-web.service -f
 ## 7. 项目目录
 
 ```text
-spacemit-k3-ai-server/
+k3-agent-server/
 ├── README.md
 ├── docs/
 │   ├── application/
@@ -161,7 +161,6 @@ spacemit-k3-ai-server/
 │   └── operations-manual.md
 ├── scripts/
 │   └── systemd/
-└── results/
 ```
 
-`results/` 保存用户自行产生的本地结果。密码、API Key、配对码等敏感信息不得写入仓库。
+密码、API Key、配对码等敏感信息不得写入仓库。
