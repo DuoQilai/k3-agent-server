@@ -1,0 +1,2 @@
+# Write tools are deliberately disabled by default.
+write_tools: false

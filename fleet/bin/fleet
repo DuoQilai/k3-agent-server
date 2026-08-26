@@ -146,7 +146,7 @@ function parsePair(text, target) {
 
 function loadDevices() {
   if (!fs.existsSync(DEVICES_PATH)) {
-    fail("找不到设备清单：" + DEVICES_PATH + "。请复制 fleet/devices.yaml.example 后填写。");
+    throw new Error("找不到设备清单：" + DEVICES_PATH + "。请复制 fleet/devices.yaml.example 后填写。");
   }
 
   const devices = [];
@@ -278,17 +278,17 @@ function probe(device) {
 }
 
 function resolveTargets(devices, target) {
-  if (!target) fail("target 不能为空；不会默认选择全部设备。", 2);
+  if (!target) throw new Error("target 不能为空；不会默认选择全部设备。");
   if (target.startsWith("tag:")) {
     const tag = target.slice(4);
-    if (!tag) fail("tag 不能为空；不会默认选择全部设备。", 2);
+    if (!tag) throw new Error("tag 不能为空；不会默认选择全部设备。");
     const matches = devices.filter((device) => device.enabled && device.tags.includes(tag));
-    if (matches.length === 0) fail("没有匹配的启用设备：" + target, 2);
+    if (matches.length === 0) throw new Error("没有匹配的启用设备：" + target);
     return matches;
   }
 
   const match = devices.find((device) => device.enabled && device.name === target);
-  if (!match) fail("没有匹配的启用设备：" + target, 2);
+  if (!match) throw new Error("没有匹配的启用设备：" + target);
   return [match];
 }
 
@@ -415,4 +415,16 @@ function main() {
   }
 }
 
-main();
+if (process.argv[1] === fileURLToPath(import.meta.url)) main();
+
+export {
+  DEVICES_PATH,
+  endpoint,
+  expandHome,
+  loadDevices,
+  probe,
+  resolveTargets,
+  run,
+  shellQuote,
+  sshArguments,
+};
