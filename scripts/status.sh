@@ -30,7 +30,7 @@ check_http() {
 }
 
 show_service llama-server.service
-show_service dsh-web.service
+show_service agent-dsh.service
 check_http "Model API" "http://127.0.0.1:8080/v1/models"
 check_http "DSH Web UI" "http://127.0.0.1:3080/"
 

@@ -9,6 +9,7 @@ Type=simple
 WorkingDirectory=%h/dsh-runtime
 Environment=PATH=%h/.local/bin:%h/.local/node/bin:/usr/local/bin:/usr/bin:/bin
 Environment=DSH_LOCAL_API_KEY=local
+EnvironmentFile=-%h/.config/k3-agent-server/agents/dsh/agent.env
 ExecStartPre=/usr/bin/test -x %h/.local/bin/node
 ExecStartPre=/usr/bin/test -f %h/dsh-fetch-https-compat.mjs
 ExecStartPre=/usr/bin/test -f %h/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js
@@ -27,3 +28,4 @@ NoNewPrivileges=true
 
 [Install]
 WantedBy=default.target
+Alias=dsh-web.service

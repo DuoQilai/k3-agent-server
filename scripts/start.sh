@@ -31,7 +31,7 @@ command -v curl >/dev/null || {
 systemctl --user start llama-server.service
 wait_for_http "llama-server.service" "http://127.0.0.1:8080/health" 90
 
-systemctl --user start dsh-web.service
-wait_for_http "dsh-web.service" "http://127.0.0.1:3080/" 60
+systemctl --user start agent-dsh.service
+wait_for_http "agent-dsh.service" "http://127.0.0.1:3080/" 60
 
 echo "K3 AI Server 已启动。"
