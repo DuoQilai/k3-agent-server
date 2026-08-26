@@ -6,4 +6,5 @@ logs/
 .env
 *.log
 results/
+fleet/devices.yaml
 agents/*/agent.env

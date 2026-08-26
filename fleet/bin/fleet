@@ -1,0 +1,418 @@
+#!/usr/bin/env node
+
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const FLEET_DIR = path.dirname(SCRIPT_DIR);
+const DEVICES_PATH = path.join(FLEET_DIR, "devices.yaml");
+const PROBE_TIMEOUT_MS = 6000;
+const MAX_OUTPUT_BUFFER = 10 * 1024 * 1024;
+const SSH_OPTIONS = [
+  "-o", "BatchMode=yes",
+  "-o", "ConnectTimeout=5",
+  "-o", "ConnectionAttempts=1",
+  "-o", "PasswordAuthentication=no",
+  "-o", "KbdInteractiveAuthentication=no",
+  "-o", "PreferredAuthentications=publickey",
+  "-o", "IdentitiesOnly=yes",
+  "-o", "StrictHostKeyChecking=accept-new",
+];
+
+const HELP = [
+  "用法：",
+  "  fleet ls",
+  "  fleet exec <target> -- <command>",
+  "  fleet push <target> <src> <dst>",
+  "  fleet pull <target> <src> <dst>",
+  "  fleet logs <target> <path> [--tail N]",
+  "",
+  "target 是设备名或 tag:<标签>。多设备目标按顺序执行。",
+  "设备清单：" + DEVICES_PATH,
+  "",
+  "子命令：",
+  "  ls       列出设备和 SSH 可达性",
+  "  exec     在目标设备执行命令",
+  "  push     上传文件或目录",
+  "  pull     下载文件或目录",
+  "  logs     读取远端文件末尾内容",
+].join("\n");
+
+const COMMAND_HELP = {
+  ls: [
+    "用法：fleet ls",
+    "",
+    "列出设备清单中的设备、架构、标签和 SSH 可达性。disabled 设备不会发起连接。",
+  ].join("\n"),
+  exec: [
+    "用法：fleet exec <target> -- <command>",
+    "",
+    "在设备名或 tag:<标签> 指定的设备上串行执行命令，输出带设备名前缀。",
+  ].join("\n"),
+  push: [
+    "用法：fleet push <target> <src> <dst>",
+    "",
+    "使用 SSH 密钥将本地文件或目录上传到目标设备。",
+  ].join("\n"),
+  pull: [
+    "用法：fleet pull <target> <src> <dst>",
+    "",
+    "使用 SSH 密钥从目标设备下载文件或目录。",
+  ].join("\n"),
+  logs: [
+    "用法：fleet logs <target> <path> [--tail N]",
+    "",
+    "读取目标设备远端文件的末尾内容，默认读取最后 100 行。",
+  ].join("\n"),
+};
+
+function fail(message, exitCode = 1) {
+  console.error("fleet: " + message);
+  process.exit(exitCode);
+}
+
+function stripComment(line) {
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (quote === '"') {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quote = null;
+    } else if (quote === "'") {
+      if (character === "'") {
+        if (line[index + 1] === "'") index += 1;
+        else quote = null;
+      }
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === "#" && (index === 0 || /\s/.test(line[index - 1]))) {
+      return line.slice(0, index);
+    }
+  }
+  return line;
+}
+
+function splitInlineList(value) {
+  const items = [];
+  let start = 0;
+  let quote = null;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (quote === null && (character === '"' || character === "'")) quote = character;
+    else if (quote !== null && character === quote) quote = null;
+    else if (quote === null && character === ",") {
+      items.push(value.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  items.push(value.slice(start).trim());
+  return items.filter((item) => item.length > 0).map(parseScalar);
+}
+
+function parseScalar(rawValue) {
+  const value = rawValue.trim();
+  if (value === "") return null;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (value === "null" || value === "~") return null;
+  if (value.startsWith("[") && value.endsWith("]")) {
+    return splitInlineList(value.slice(1, -1));
+  }
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    try {
+      return JSON.parse(value);
+    } catch {
+      throw new Error("无法解析 YAML 字符串：" + value);
+    }
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replaceAll("''", "'");
+  }
+  return value;
+}
+
+function parsePair(text, target) {
+  const match = /^([A-Za-z_][A-Za-z0-9_-]*):(?:\s+(.*))?$/.exec(text);
+  if (!match) throw new Error("无法解析 devices.yaml 行：" + text);
+  const key = match[1];
+  const value = match[2] ?? "";
+  target[key] = parseScalar(value);
+  return { key, value };
+}
+
+function loadDevices() {
+  if (!fs.existsSync(DEVICES_PATH)) {
+    fail("找不到设备清单：" + DEVICES_PATH + "。请复制 fleet/devices.yaml.example 后填写。");
+  }
+
+  const devices = [];
+  let inDevices = false;
+  let current = null;
+  let pendingList = null;
+  const source = fs.readFileSync(DEVICES_PATH, "utf8");
+
+  for (const [lineNumber, originalLine] of source.split(/\r?\n/).entries()) {
+    const line = stripComment(originalLine);
+    if (!line.trim()) continue;
+    const indent = line.length - line.trimStart().length;
+    const trimmed = line.trim();
+
+    if (indent === 0) {
+      if (trimmed !== "devices:") {
+        throw new Error("第 " + (lineNumber + 1) + " 行应为 devices:。");
+      }
+      inDevices = true;
+      current = null;
+      pendingList = null;
+      continue;
+    }
+    if (!inDevices) throw new Error("第 " + (lineNumber + 1) + " 行位于 devices: 之前。");
+
+    if (indent === 2 && trimmed.startsWith("- ")) {
+      current = {};
+      devices.push(current);
+      pendingList = null;
+      parsePair(trimmed.slice(2), current);
+      continue;
+    }
+
+    if (!current) throw new Error("第 " + (lineNumber + 1) + " 行没有设备条目。");
+    if (pendingList && indent > pendingList.indent && trimmed.startsWith("- ")) {
+      current[pendingList.key].push(parseScalar(trimmed.slice(2)));
+      continue;
+    }
+    if (indent >= 4) {
+      const pair = parsePair(trimmed, current);
+      pendingList = pair.value === "" ? { key: pair.key, indent } : null;
+      if (pair.value === "" && pair.key !== "tags") {
+        throw new Error("第 " + (lineNumber + 1) + " 行只支持 tags 使用多行列表。");
+      }
+      if (pair.value === "" && !Array.isArray(current[pair.key])) current[pair.key] = [];
+      continue;
+    }
+    throw new Error("无法解析 devices.yaml 第 " + (lineNumber + 1) + " 行。");
+  }
+
+  if (devices.length === 0) throw new Error("devices.yaml 没有设备条目。");
+  validateDevices(devices);
+  return devices;
+}
+
+function validateDevices(devices) {
+  const names = new Set();
+  const required = ["name", "host", "user", "ssh_key", "arch", "tags", "enabled"];
+  for (const device of devices) {
+    for (const key of required) {
+      if (!(key in device) || device[key] === null || device[key] === "") {
+        throw new Error("设备条目缺少字段：" + key);
+      }
+    }
+    if (names.has(device.name)) throw new Error("设备名称重复：" + device.name);
+    names.add(device.name);
+    if (!Array.isArray(device.tags)) throw new Error("设备 tags 必须是列表：" + device.name);
+    if (typeof device.enabled !== "boolean") throw new Error("设备 enabled 必须是 true 或 false：" + device.name);
+    for (const key of ["name", "host", "user", "ssh_key"]) {
+      if (/[\s\0]/.test(String(device[key]))) {
+        throw new Error("设备字段不能包含空白或控制字符：" + device.name + "." + key);
+      }
+    }
+  }
+}
+
+function expandHome(value) {
+  if (value === "~") return process.env.HOME;
+  if (value.startsWith("~/")) return path.join(process.env.HOME, value.slice(2));
+  return value;
+}
+
+function endpoint(device) {
+  return device.user + "@" + device.host;
+}
+
+function sshArguments(device) {
+  const key = expandHome(String(device.ssh_key));
+  return ["-i", key, ...SSH_OPTIONS, endpoint(device)];
+}
+
+function run(command, args, timeout = undefined) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    timeout,
+    maxBuffer: MAX_OUTPUT_BUFFER,
+  });
+  if (result.error) {
+    return {
+      code: result.status ?? 1,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? result.error.message,
+    };
+  }
+  return {
+    code: result.status ?? 1,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+  };
+}
+
+function writePrefixed(name, content, stream) {
+  if (!content) return;
+  for (const line of content.split(/\r?\n/)) {
+    if (line) stream.write("[" + name + "] " + line + "\n");
+  }
+}
+
+function shellQuote(value) {
+  return "'" + String(value).replaceAll("'", "'\\''") + "'";
+}
+
+function probe(device) {
+  const key = expandHome(String(device.ssh_key));
+  if (!fs.existsSync(key)) {
+    return { code: 1, stdout: "", stderr: "SSH 密钥不存在：" + key };
+  }
+  return run("ssh", [...sshArguments(device), "true"], PROBE_TIMEOUT_MS);
+}
+
+function resolveTargets(devices, target) {
+  if (!target) fail("target 不能为空；不会默认选择全部设备。", 2);
+  if (target.startsWith("tag:")) {
+    const tag = target.slice(4);
+    if (!tag) fail("tag 不能为空；不会默认选择全部设备。", 2);
+    const matches = devices.filter((device) => device.enabled && device.tags.includes(tag));
+    if (matches.length === 0) fail("没有匹配的启用设备：" + target, 2);
+    return matches;
+  }
+
+  const match = devices.find((device) => device.enabled && device.name === target);
+  if (!match) fail("没有匹配的启用设备：" + target, 2);
+  return [match];
+}
+
+function runForTargets(targets, action) {
+  let failed = false;
+  for (const device of targets) {
+    const result = action(device);
+    writePrefixed(device.name, result.stdout, process.stdout);
+    writePrefixed(device.name, result.stderr, process.stderr);
+    if (result.code !== 0) {
+      failed = true;
+      process.stderr.write("[" + device.name + "] 退出码：" + result.code + "\n");
+    }
+  }
+  return failed ? 1 : 0;
+}
+
+function commandLs() {
+  const devices = loadDevices();
+  let failed = false;
+  console.log("NAME\tHOST\tARCH\tTAGS\tENABLED\tSTATUS");
+  for (const device of devices) {
+    if (!device.enabled) {
+      console.log(device.name + "\t" + device.host + "\t" + device.arch + "\t" + device.tags.join(",") + "\tfalse\tdisabled");
+      continue;
+    }
+    const result = probe(device);
+    const status = result.code === 0 ? "reachable" : "unreachable";
+    console.log(device.name + "\t" + device.host + "\t" + device.arch + "\t" + device.tags.join(",") + "\ttrue\t" + status);
+    if (result.code !== 0) failed = true;
+  }
+  return failed ? 1 : 0;
+}
+
+function commandExec(args) {
+  const separator = args.indexOf("--");
+  if (separator < 1 || separator === args.length - 1) fail(COMMAND_HELP.exec, 2);
+  const devices = loadDevices();
+  const targets = resolveTargets(devices, args[0]);
+  const command = args.slice(separator + 1).map(shellQuote).join(" ");
+  return runForTargets(targets, (device) => {
+    const key = expandHome(String(device.ssh_key));
+    if (!fs.existsSync(key)) {
+      return { code: 1, stdout: "", stderr: "SSH 密钥不存在：" + key };
+    }
+    return run("ssh", [...sshArguments(device), command]);
+  });
+}
+
+function commandCopy(command, args) {
+  if (args.length !== 3) fail(COMMAND_HELP[command], 2);
+  const devices = loadDevices();
+  const targets = resolveTargets(devices, args[0]);
+  const source = args[1];
+  const destination = args[2];
+  return runForTargets(targets, (device) => {
+    const key = expandHome(String(device.ssh_key));
+    if (!fs.existsSync(key)) {
+      return { code: 1, stdout: "", stderr: "SSH 密钥不存在：" + key };
+    }
+    const remotePath = endpoint(device) + ":" + destination;
+    const copyArgs = [
+      "-i",
+      key,
+      ...SSH_OPTIONS,
+      command === "push" ? source : remotePath,
+      command === "push" ? remotePath : destination,
+    ];
+    return run("scp", copyArgs);
+  });
+}
+
+function commandLogs(args) {
+  if (args.length < 2) fail(COMMAND_HELP.logs, 2);
+  const devices = loadDevices();
+  const targets = resolveTargets(devices, args[0]);
+  const remotePath = args[1];
+  let tail = 100;
+  for (let index = 2; index < args.length; index += 1) {
+    if (args[index] !== "--tail" || index + 1 >= args.length) fail(COMMAND_HELP.logs, 2);
+    tail = Number(args[index + 1]);
+    if (!Number.isInteger(tail) || tail < 1) fail("--tail 必须是正整数。", 2);
+    index += 1;
+  }
+  const command = ["tail", "-n", String(tail), "--", remotePath].map(shellQuote).join(" ");
+  return runForTargets(targets, (device) => {
+    const key = expandHome(String(device.ssh_key));
+    if (!fs.existsSync(key)) {
+      return { code: 1, stdout: "", stderr: "SSH 密钥不存在：" + key };
+    }
+    return run("ssh", [...sshArguments(device), command]);
+  });
+}
+
+function main() {
+  const args = process.argv.slice(2);
+  if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
+    console.log(HELP);
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+
+  const command = args.shift();
+  if (!(command in COMMAND_HELP)) fail("未知子命令：" + command + "\n\n" + HELP, 2);
+  if (args[0] === "--help" || args[0] === "-h") {
+    console.log(COMMAND_HELP[command]);
+    return;
+  }
+
+  try {
+    let code;
+    if (command === "ls") {
+      if (args.length > 0) fail(COMMAND_HELP.ls, 2);
+      code = commandLs();
+    } else if (command === "exec") {
+      code = commandExec(args);
+    } else if (command === "push" || command === "pull") {
+      code = commandCopy(command, args);
+    } else {
+      code = commandLogs(args);
+    }
+    process.exitCode = code;
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+}
+
+main();

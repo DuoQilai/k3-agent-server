@@ -1,0 +1,8 @@
+devices:
+  - name: dev-board-01
+    host: 192.0.2.10
+    user: YOUR_SSH_USER
+    ssh_key: ~/.ssh/id_ed25519
+    arch: riscv64
+    tags: [dev, riscv64]
+    enabled: true
