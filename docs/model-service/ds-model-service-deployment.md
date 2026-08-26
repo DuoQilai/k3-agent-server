@@ -153,7 +153,7 @@ curl -fsS http://127.0.0.1:8080/v1/models
 
 ### 5.2 systemd 服务配置
 
-正式运行使用 `$HOME/.config/systemd/user/llama-server.service`。项目提供的完整配置位于 `scripts/systemd/llama-server.service`，关键内容如下：
+正式运行使用 `$HOME/.config/systemd/user/llama-server.service`。项目提供的完整配置位于 `model/systemd/llama-server.service`，关键内容如下：
 
 ```ini
 [Unit]
@@ -178,7 +178,7 @@ WantedBy=default.target
 ```bash
 mkdir -p "$HOME/.config/systemd/user"
 install -m 0644 \
-  scripts/systemd/llama-server.service \
+  model/systemd/llama-server.service \
   "$HOME/.config/systemd/user/llama-server.service"
 
 systemctl --user daemon-reload

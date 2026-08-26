@@ -9,9 +9,9 @@
 | unit | 端口 | 作用 |
 |---|---|---|
 | `llama-server.service` | 8080 | 本地模型 API |
-| `dsh-web.service` | 3080 | DSH Agent 和 Web UI |
+| `agent-dsh.service` | 3080 | DSH Agent 和 Web UI；dsh-web.service 为兼容别名 |
 
-unit 源文件位于 `scripts/systemd/`，安装后复制到 `$HOME/.config/systemd/user/`。
+unit 源文件位于 model/systemd/ 和 agents/dsh/systemd/，安装后复制到 `$HOME/.config/systemd/user/`。
 
 ### 1.2 正式运行机制
 
@@ -28,7 +28,7 @@ unit 源文件位于 `scripts/systemd/`，安装后复制到 `$HOME/.config/syst
 
 ```bash
 systemctl --user is-enabled llama-server.service
-systemctl --user is-enabled dsh-web.service
+systemctl --user is-enabled agent-dsh.service
 loginctl show-user "$USER" -p Linger
 ```
 
@@ -44,7 +44,7 @@ bash scripts/status.sh
 
 ```text
 llama-server.service: active
-dsh-web.service: active
+agent-dsh.service: active
 Model API: healthy
 DSH Web UI: healthy
 ```
@@ -111,10 +111,10 @@ bash scripts/start.sh
 
 ```bash
 systemctl --user restart llama-server.service
-systemctl --user restart dsh-web.service
+systemctl --user restart agent-dsh.service
 
-systemctl --user stop dsh-web.service
-systemctl --user start dsh-web.service
+systemctl --user stop agent-dsh.service
+systemctl --user start agent-dsh.service
 ```
 
 修改模型服务时，先停止 DSH 可以避免请求落到正在重启的模型 API。
@@ -132,9 +132,9 @@ bash scripts/status.sh
 ### 5.2 systemd 状态
 
 ```bash
-systemctl --user status llama-server.service dsh-web.service
+systemctl --user status llama-server.service agent-dsh.service
 systemctl --user show llama-server.service -p ActiveState -p SubState -p NRestarts
-systemctl --user show dsh-web.service -p ActiveState -p SubState -p NRestarts
+systemctl --user show agent-dsh.service -p ActiveState -p SubState -p NRestarts
 ```
 
 ### 5.3 HTTP 检查
@@ -151,20 +151,20 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3080/
 
 ```bash
 journalctl --user -u llama-server.service -n 100 --no-pager
-journalctl --user -u dsh-web.service -n 100 --no-pager
+journalctl --user -u agent-dsh.service -n 100 --no-pager
 ```
 
 ### 6.2 实时日志
 
 ```bash
 journalctl --user -u llama-server.service -f
-journalctl --user -u dsh-web.service -f
+journalctl --user -u agent-dsh.service -f
 ```
 
 ### 6.3 本次开机日志
 
 ```bash
-journalctl --user -b -u llama-server.service -u dsh-web.service --no-pager
+journalctl --user -b -u llama-server.service -u agent-dsh.service --no-pager
 ```
 
 ## 7. 修改服务配置
@@ -174,13 +174,13 @@ journalctl --user -b -u llama-server.service -u dsh-web.service --no-pager
 模型服务配置：
 
 ```text
-scripts/systemd/llama-server.service
+model/systemd/llama-server.service
 ```
 
 DSH 服务配置：
 
 ```text
-scripts/systemd/dsh-web.service
+agents/dsh/systemd/agent-dsh.service
 ```
 
 部署文档中也记录了 unit 的关键配置和参数含义；服务配置不只存在于脚本文件。
@@ -224,13 +224,13 @@ bash scripts/status.sh
 如果 unit 为 enabled 但没有启动，查看本次开机日志：
 
 ```bash
-journalctl --user -b -u llama-server.service -u dsh-web.service --no-pager
+journalctl --user -b -u llama-server.service -u agent-dsh.service --no-pager
 ```
 
 ### 8.3 关闭开机自启
 
 ```bash
-systemctl --user disable --now dsh-web.service llama-server.service
+systemctl --user disable --now agent-dsh.service llama-server.service
 ```
 
 只有明确不再需要无人登录启动时，才执行：
@@ -281,8 +281,8 @@ command -v llama-server
 ### 10.3 DSH 服务失败
 
 ```bash
-systemctl --user status dsh-web.service
-journalctl --user -u dsh-web.service -n 100 --no-pager
+systemctl --user status agent-dsh.service
+journalctl --user -u agent-dsh.service -n 100 --no-pager
 test -x "$HOME/.local/bin/node"
 test -f "$HOME/dsh-fetch-https-compat.mjs"
 test -f "$HOME/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js"
@@ -296,7 +296,7 @@ test -f "$HOME/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js"
 2. `8080/v1/chat/completions`；
 3. DSH 中的 Provider ID、Base URL、协议、凭据和 Model ID；
 4. `llama-server.service` journal；
-5. `dsh-web.service` journal；
+5. `agent-dsh.service` journal；
 6. 新建会话后的最小请求。
 
 模型配置详见 [DSH 模型接入与切换](system-integration/dsh-model-integration.md)。

@@ -26,12 +26,19 @@ DSH Agent Runtime
 - systemd 用户服务、开机自启和崩溃重启；
 - 仅回环监听和 SSH 隧道访问。
 
+当前 fleet MVP 提供设备清单、SSH 可达性检查、命令执行、文件传输、日志读取，
+以及供 DSH 和 Codex CLI 使用的 stdio MCP server。
+
 ## 3. 组件边界
+
+fleet 是共享的设备中控组件，和 DSH、模型服务并列；它不负责模型推理、Agent
+会话或多设备调度。
 
 | 组件 | 负责 | 不负责 |
 |---|---|---|
 | 模型服务 | GGUF 加载、推理、OpenAI-compatible API | 工作区、文件和 Agent 编排 |
 | DSH Agent 服务 | 对话、工作区、工具、权限和 Web UI | 加载或执行 GGUF 模型 |
+| Fleet 中控 | 设备清单、SSH 命令、文件、日志和 MCP | 模型推理、Agent 会话和多设备调度 |
 | 系统集成 | 提供方、Base URL、凭据、模型选择和切换 | 安装 DSH 或 `llama-server` |
 | systemd | 启停、开机自启、崩溃重启和日志 | 模型配置和 Agent 业务逻辑 |
 

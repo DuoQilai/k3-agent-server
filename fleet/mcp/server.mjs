@@ -18,6 +18,12 @@ const MCP_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(MCP_DIR, "config.yaml");
 const SERVER_NAME = "k3-fleet-mcp";
 const SERVER_VERSION = "0.1.0";
+const HELP = [
+  "用法：node fleet/mcp/server.mjs",
+  "",
+  "启动 stdio MCP server。默认只注册 fleet_list、fleet_status 和 fleet_logs。",
+  "写工具需要在 fleet/mcp/config.yaml 中设置 write_tools: true。",
+].join("\n");
 
 const READ_TOOLS = [
   {
@@ -267,6 +273,10 @@ function handleMessage(message) {
 }
 
 let buffer = "";
+if (process.argv.slice(2).includes("--help") || process.argv.slice(2).includes("-h")) {
+  console.log(HELP);
+  process.exit(0);
+}
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   buffer += chunk;
