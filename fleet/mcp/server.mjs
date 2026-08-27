@@ -12,7 +12,7 @@ import {
   run,
   shellQuote,
   sshArguments,
-} from "../bin/fleet";
+} from "../lib/core.mjs";
 
 const MCP_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(MCP_DIR, "config.yaml");
