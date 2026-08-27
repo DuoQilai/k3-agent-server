@@ -77,6 +77,7 @@ DSH 当前安装器将配置模板复制到：
 - exec、push、pull 和 logs 必须显式指定设备名或 tag:标签；
 - tag 没有匹配启用设备时直接失败，不默认选择全部设备；
 - 多设备目标当前串行执行；
+- pull 使用多设备 tag 时，分别写入 `<dst>/<设备名>/`，避免相互覆盖；
 - MCP 写工具默认不注册，只有 fleet/mcp/config.yaml 明确设置
   write_tools: true 才可用；
 - 每次 MCP 写工具调用都使用 logger 写入实际设备、完整命令和目标主机。

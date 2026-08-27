@@ -78,7 +78,7 @@ const WRITE_TOOLS = [
       required: ["target", "src", "dst"],
       properties: {
         target: { type: "string", description: "设备名或 tag:标签。" },
-        src: { type: "string", description: "本地文件或目录。" },
+        src: { type: "string", description: "本地文件。" },
         dst: { type: "string", description: "远端目标路径。" },
       },
       additionalProperties: false,
@@ -135,7 +135,12 @@ function collectResult(device, result) {
 }
 
 function auditWrite(action, device, command) {
-  const message = action + " target=" + device.name + " host=" + device.host + " command=" + command;
+  const message = JSON.stringify({
+    action,
+    target: device.name,
+    host: device.host,
+    command,
+  });
   const result = spawnSync("logger", ["-t", SERVER_NAME, message], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw new Error("无法写入 journald 审计日志，已拒绝执行写操作。");
@@ -191,7 +196,7 @@ function callExec(rawArguments) {
   const command = requiredString(args, "command");
   const targets = selectTargets(loadDevices(), target);
   const results = targets.map((device) => {
-    auditWrite("fleet_exec", device, "fleet exec " + target + " -- " + command);
+    auditWrite("fleet_exec", device, "fleet exec " + shellQuote(target) + " -- " + command);
     return collectResult(device, run("ssh", [...sshArguments(device), command]));
   });
   return textResult({ results }, results.some((item) => item.code !== 0));
@@ -206,9 +211,11 @@ function callPush(rawArguments) {
   const results = targets.map((device) => {
     const remotePath = endpoint(device) + ":" + destination;
     const connectionArgs = sshArguments(device);
-    auditWrite("fleet_push", device, "fleet push " + target + " " + source + " " + destination);
+    const command = ["fleet", "push", target, source, destination].map(shellQuote).join(" ");
+    auditWrite("fleet_push", device, command);
     return collectResult(device, run("scp", [
       ...connectionArgs.slice(0, -1),
+      "--",
       source,
       remotePath,
     ]));

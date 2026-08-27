@@ -35,8 +35,8 @@ const HELP = [
   "子命令：",
   "  ls       列出设备和 SSH 可达性",
   "  exec     在目标设备执行命令",
-  "  push     上传文件或目录",
-  "  pull     下载文件或目录",
+  "  push     上传文件",
+  "  pull     下载文件",
   "  logs     读取远端文件末尾内容",
 ].join("\n");
 
@@ -54,12 +54,12 @@ const COMMAND_HELP = {
   push: [
     "用法：fleet push <target> <src> <dst>",
     "",
-    "使用 SSH 密钥将本地文件或目录上传到目标设备。",
+    "使用 SSH 密钥将本地文件上传到目标设备。",
   ].join("\n"),
   pull: [
     "用法：fleet pull <target> <src> <dst>",
     "",
-    "使用 SSH 密钥从目标设备下载文件或目录。",
+    "使用 SSH 密钥从目标设备下载文件。tag 匹配多台设备时写入 <dst>/<设备名>/。",
   ].join("\n"),
   logs: [
     "用法：fleet logs <target> <path> [--tail N]",
@@ -211,14 +211,28 @@ function validateDevices(devices) {
         throw new Error("设备条目缺少字段：" + key);
       }
     }
+    for (const key of ["name", "host", "user", "ssh_key", "arch"]) {
+      if (typeof device[key] !== "string") {
+        throw new Error("设备字段必须是字符串：" + key);
+      }
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(device.name)) {
+      throw new Error("设备 name 只能包含字母、数字、点、下划线和连字符：" + device.name);
+    }
     if (names.has(device.name)) throw new Error("设备名称重复：" + device.name);
     names.add(device.name);
     if (!Array.isArray(device.tags)) throw new Error("设备 tags 必须是列表：" + device.name);
+    if (device.tags.some((tag) => typeof tag !== "string" || tag.length === 0)) {
+      throw new Error("设备 tags 只能包含非空字符串：" + device.name);
+    }
     if (typeof device.enabled !== "boolean") throw new Error("设备 enabled 必须是 true 或 false：" + device.name);
-    for (const key of ["name", "host", "user", "ssh_key"]) {
+    for (const key of ["name", "host", "user", "ssh_key", "arch"]) {
       if (/[\s\0]/.test(String(device[key]))) {
         throw new Error("设备字段不能包含空白或控制字符：" + device.name + "." + key);
       }
+    }
+    if (device.user.startsWith("-")) {
+      throw new Error("设备 user 不能以 - 开头：" + device.name);
     }
   }
 }
@@ -325,7 +339,7 @@ function commandLs() {
 
 function commandExec(args) {
   const separator = args.indexOf("--");
-  if (separator < 1 || separator === args.length - 1) fail(COMMAND_HELP.exec, 2);
+  if (separator !== 1 || separator === args.length - 1) fail(COMMAND_HELP.exec, 2);
   const devices = loadDevices();
   const targets = resolveTargets(devices, args[0]);
   const command = args.slice(separator + 1).map(shellQuote).join(" ");
@@ -349,13 +363,20 @@ function commandCopy(command, args) {
     if (!fs.existsSync(key)) {
       return { code: 1, stdout: "", stderr: "SSH 密钥不存在：" + key };
     }
-    const remotePath = endpoint(device) + ":" + destination;
+    const remotePath = endpoint(device) + ":" + (command === "push" ? destination : source);
+    const localDestination = command === "pull" && targets.length > 1
+      ? path.join(destination, device.name)
+      : destination;
+    if (command === "pull" && targets.length > 1) {
+      fs.mkdirSync(localDestination, { recursive: true });
+    }
     const copyArgs = [
       "-i",
       key,
       ...SSH_OPTIONS,
+      "--",
       command === "push" ? source : remotePath,
-      command === "push" ? remotePath : destination,
+      command === "push" ? remotePath : localDestination,
     ];
     return run("scp", copyArgs);
   });

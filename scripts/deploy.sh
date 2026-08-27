@@ -33,8 +33,13 @@ require_host_tools() {
   [[ "$(uname -s)" == "Linux" ]] || fail "只能在 K3 的 Linux 服务设备上执行。"
   [[ "$(uname -m)" == "riscv64" ]] || fail "当前架构为 $(uname -m)，需要 riscv64。"
   command -v bash >/dev/null || fail "找不到 bash。"
+  command -v sudo >/dev/null || fail "找不到 sudo。"
   command -v systemctl >/dev/null || fail "找不到 systemctl。"
   command -v loginctl >/dev/null || fail "找不到 loginctl。"
+}
+
+check_sudo() {
+  sudo -v || fail "sudo 认证失败；部署尚未停止现有服务。"
 }
 
 stop_existing_services() {
@@ -59,6 +64,7 @@ fi
 
 run_as_user
 require_host_tools
+check_sudo
 stop_existing_services
 
 bash "$PROJECT_DIR/model/install.sh"

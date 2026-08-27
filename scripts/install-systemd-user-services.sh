@@ -46,6 +46,11 @@ fi
 
 systemctl --user daemon-reload
 systemctl --user enable llama-server.service agent-dsh.service
+if [[ ! -L "$UNIT_TARGET_DIR/dsh-web.service" ]] || \
+   [[ "$(basename "$(readlink "$UNIT_TARGET_DIR/dsh-web.service")")" != "agent-dsh.service" ]]; then
+  echo "dsh-web.service 兼容别名安装失败。" >&2
+  exit 1
+fi
 
 cat <<EOF
 systemd 用户服务已安装：

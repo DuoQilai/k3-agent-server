@@ -46,7 +46,8 @@ bash scripts/deploy.sh
 6. 安装 agent-dsh.service 和 llama-server.service；
 7. 启用 linger，启动并检查两个服务。
 
-执行过程中需要网络、模型磁盘空间和 sudo 权限。不要使用 root 直接运行。
+执行过程中需要网络、模型磁盘空间和 sudo 权限。请在交互式 K3 终端先完成一次
+`sudo -v` 认证，再运行部署脚本；不要使用 root 直接运行。
 
 部署完成后检查：
 
@@ -65,7 +66,8 @@ bash scripts/status.sh
 2. 按照[模型服务部署](docs/model-service/ds-model-service-deployment.md)运行
    model/install.sh，建立 8080 服务所需文件；
 3. 按照[DSH 部署](docs/agent-service/dsh-deployment.md)运行 agents/dsh/install.sh；
-4. 运行 scripts/install-systemd-user-services.sh，启用 linger 并执行 scripts/start.sh；
+4. 运行 scripts/install-systemd-user-services.sh，执行
+   `sudo loginctl enable-linger "$USER"`，再运行 scripts/start.sh；
 5. 按照[DSH 模型接入与切换](docs/system-integration/dsh-model-integration.md)配置模型。
 
 ## 3. 下次访问

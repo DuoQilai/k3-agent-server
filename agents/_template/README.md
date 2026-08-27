@@ -7,4 +7,4 @@
 - README.md：说明安装、启动、访问和配置方式。
 
 新 Agent 使用 agent-<name>.service 命名，端口从 3080 起分配，模型端点通过
-自己的 agent.env 指向 http://127.0.0.1:8080/v1。
+自己的 agent.env 指向 http://127.0.0.1:8080/v1

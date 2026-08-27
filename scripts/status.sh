@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -u
+set -euo pipefail
 
 command -v systemctl >/dev/null || {
   echo "找不到 systemctl；请在 K3 Linux 服务设备上执行。" >&2

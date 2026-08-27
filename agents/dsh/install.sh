@@ -102,9 +102,15 @@ install_dsh() {
   echo "安装 DSH v${DSH_VERSION}。"
   mkdir -p "$DSH_RUNTIME_DIR"
 
-  if [[ -f "$DSH_RUNTIME_DIR/package.json" ]] && \
-     ! grep -q '"name"[[:space:]]*:[[:space:]]*"k3-dsh-runtime"' "$DSH_RUNTIME_DIR/package.json"; then
-    fail "$DSH_RUNTIME_DIR 已包含其他 Node.js 项目；请先备份并移走该目录。"
+  if [[ -f "$DSH_RUNTIME_DIR/package.json" ]]; then
+    if ! grep -q '"name"[[:space:]]*:[[:space:]]*"k3-dsh-runtime"' "$DSH_RUNTIME_DIR/package.json" && \
+       ! (grep -q '"name"[[:space:]]*:[[:space:]]*"dsh-runtime"' "$DSH_RUNTIME_DIR/package.json" && \
+          grep -q '"@deepseek-ai/dsh"[[:space:]]*:' "$DSH_RUNTIME_DIR/package.json"); then
+      fail "$DSH_RUNTIME_DIR 已包含其他 Node.js 项目；部署已停止以避免覆盖。"
+    fi
+    if grep -q '"name"[[:space:]]*:[[:space:]]*"dsh-runtime"' "$DSH_RUNTIME_DIR/package.json"; then
+      echo "检测到旧 DSH runtime，将按当前固定版本收敛。"
+    fi
   fi
 
   cat > "$DSH_RUNTIME_DIR/package.json" <<EOF
