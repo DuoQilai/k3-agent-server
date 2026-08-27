@@ -175,7 +175,7 @@ function callStatus(rawArguments) {
       stderr: result.stderr,
     };
   });
-  return textResult({ devices: results }, results.some((item) => item.status === "unreachable"));
+  return textResult({ devices: results });
 }
 
 function callLogs(rawArguments) {
@@ -195,8 +195,11 @@ function callExec(rawArguments) {
   const target = requiredString(args, "target");
   const command = requiredString(args, "command");
   const targets = selectTargets(loadDevices(), target);
+  const auditCommand = "fleet exec " + shellQuote(target) + " -- " + command;
+  for (const device of targets) {
+    auditWrite("fleet_exec", device, auditCommand);
+  }
   const results = targets.map((device) => {
-    auditWrite("fleet_exec", device, "fleet exec " + shellQuote(target) + " -- " + command);
     return collectResult(device, run("ssh", [...sshArguments(device), command]));
   });
   return textResult({ results }, results.some((item) => item.code !== 0));
