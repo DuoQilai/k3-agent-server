@@ -212,11 +212,12 @@ function callPush(rawArguments) {
   const destination = requiredString(args, "dst");
   const targets = selectTargets(loadDevices(), target);
   const results = targets.map((device) => {
-    const remotePath = endpoint(device) + ":" + destination;
+    const remotePath = endpoint(device) + ":" + shellQuote(destination);
     const connectionArgs = sshArguments(device);
     const command = ["fleet", "push", target, source, destination].map(shellQuote).join(" ");
     auditWrite("fleet_push", device, command);
     return collectResult(device, run("scp", [
+      "-O",
       ...connectionArgs.slice(0, -1),
       "--",
       source,

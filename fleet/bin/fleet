@@ -131,7 +131,8 @@ function commandCopy(command, args) {
     if (!fs.existsSync(key)) {
       return { code: 1, stdout: "", stderr: "SSH 密钥不存在：" + key };
     }
-    const remotePath = endpoint(device) + ":" + (command === "push" ? destination : source);
+    const connectionArgs = sshArguments(device);
+    const remotePath = endpoint(device) + ":" + shellQuote(command === "push" ? destination : source);
     const localDestination = command === "pull" && targets.length > 1
       ? path.join(destination, device.name)
       : destination;
@@ -139,9 +140,9 @@ function commandCopy(command, args) {
       fs.mkdirSync(localDestination, { recursive: true });
     }
     const copyArgs = [
-      "-i",
-      key,
-      ...SSH_OPTIONS,
+      "-O",
+      ...(command === "pull" ? ["-T"] : []),
+      ...connectionArgs.slice(0, -1),
       "--",
       command === "push" ? source : remotePath,
       command === "push" ? remotePath : localDestination,

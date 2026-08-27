@@ -74,6 +74,8 @@ DSH 当前安装器将配置模板复制到：
 - 设备清单使用 fleet/devices.yaml，示例使用 fleet/devices.yaml.example；
 - 设备条目必须声明 name、host、user、ssh_key、arch、tags 和 enabled；
 - fleet 只使用 SSH 私钥，禁止密码认证；
+- StrictHostKeyChecking=accept-new 采用首次连接信任（TOFU）策略，首次记录主机密钥，
+  后续主机密钥变化时拒绝连接；
 - exec、push、pull 和 logs 必须显式指定设备名或 tag:标签；
 - tag 没有匹配启用设备时直接失败，不默认选择全部设备；
 - 多设备目标当前串行执行；
