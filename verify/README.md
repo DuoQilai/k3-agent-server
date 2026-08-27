@@ -1,7 +1,7 @@
 # RuyiSDK 验证流水线
 
 `verify` 在 K3 服务设备上执行本地构建，再通过 fleet 对目标设备逐台执行
-`push → exec → pull → assert`。同一设备由文件锁串行保护，一台失败不会阻断标签内
+`push → exec → pull → assert`。同一设备由内核文件锁串行保护，一台失败不会阻断标签内
 的其他设备。
 
 ## 1. K3 准备
@@ -14,7 +14,7 @@ RuyiSDK 官方安装文档当前明确提供 Linux `riscv64` 预编译二进制�
 ./verify/setup-ruyi.sh
 ~~~
 
-脚本将实际架构、Ruyi 运行状态和原生编译器路径记录到：
+脚本将实际架构、Ruyi 运行状态、原生编译器和 verify 锁所需的 `python3` 路径记录到：
 
 ~~~text
 ${XDG_STATE_HOME:-$HOME/.local/state}/k3-agent-server/ruyi-host-support.txt
@@ -94,8 +94,14 @@ verify/reports/<job>-<序号>/
 `result.json` 记录 build 和每台设备各步骤的起止时间、耗时、退出码、成败、失败步骤及
 汇总。`verify/build/` 和 `verify/reports/` 都是本地产物，已由 `.gitignore` 排除。
 
-设备锁位于系统临时目录的 `k3-agent-server-verify-locks/`。锁被占用时命令会打印排队
-提示并等待；进程正常结束会释放锁，同一主机上已经退出的进程留下的锁会自动回收。
+设备锁位于系统临时目录的 `k3-agent-server-verify-locks/`，由 `python3` 的
+`fcntl.flock` 持有。锁被占用时命令会打印排队提示并等待；持锁进程异常退出时由内核
+自动释放，不依赖锁文件内容或 PID 清理。构建阶段还使用同目录下的全局构建锁，并将
+成功构建的每个 artifact 快照保存到报告的 `build-artifacts/` 后再上传，避免并发任务
+覆盖共享的 `verify/build/` 文件。
+
+verify 调用 `fleet exec --json` 获取设备端真实退出码。机器可读结果同时区分设备端退出
+码、fleet 进程退出码、超时和 SSH 传输错误，避免把 fleet 的聚合退出码误当成断言输入。
 
 ## 5. 本地回归测试
 
@@ -105,4 +111,6 @@ verify/reports/<job>-<序号>/
 node --test verify/tests/verify.test.mjs
 ~~~
 
-覆盖多设备成功、错误断言、命令超时、单设备失败后继续执行，以及同设备并发排队。
+覆盖多设备成功、错误断言、命令超时、单设备失败后继续执行、同设备并发排队、异常退出
+后的锁释放、构建产物快照、非法路径前置校验、`__proto__` 映射，以及 fleet 的远端退出码
+与传输错误协议。

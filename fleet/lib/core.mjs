@@ -213,6 +213,8 @@ function run(command, args, timeout = undefined) {
       stdout: result.stdout ?? "",
       stderr: result.stderr ?? result.error.message,
       timedOut: result.error.code === "ETIMEDOUT",
+      signal: result.signal ?? null,
+      error: result.error.message,
     };
   }
   return {
@@ -220,6 +222,8 @@ function run(command, args, timeout = undefined) {
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
     timedOut: false,
+    signal: result.signal ?? null,
+    error: null,
   };
 }
 

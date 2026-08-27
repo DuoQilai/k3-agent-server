@@ -19,7 +19,7 @@ echo "K3 架构：$arch"
 echo "安装原生 C 编译环境与 RuyiSDK 包管理器"
 
 missing_tools=()
-for tool in cc ar ld curl; do
+for tool in cc ar ld curl python3; do
   command -v "$tool" >/dev/null 2>&1 || missing_tools+=("$tool")
 done
 
@@ -35,7 +35,7 @@ if [[ "${#missing_tools[@]}" -gt 0 ]]; then
     sudo_cmd=(sudo)
   fi
   "${sudo_cmd[@]}" apt-get update
-  "${sudo_cmd[@]}" apt-get install -y build-essential ca-certificates curl
+  "${sudo_cmd[@]}" apt-get install -y build-essential ca-certificates curl python3
 else
   echo "原生编译工具已存在，跳过系统包安装。"
 fi
@@ -75,6 +75,7 @@ printf '%s\n' "$ruyi_version"
   echo "package_index_status=$package_index_status"
   echo "ruyi_binary=$(command -v ruyi)"
   echo "native_compiler=$(command -v cc)"
+  echo "verify_python=$(command -v python3)"
 } > "$status_file"
 
 echo "RuyiSDK 与设备端原生编译环境已就绪。"
