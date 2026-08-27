@@ -18,7 +18,7 @@ import {
 const HELP = [
   "用法：",
   "  fleet ls",
-  "  fleet exec <target> -- <command>",
+  "  fleet exec <target> [--timeout SECONDS] -- <command>",
   "  fleet push <target> <src> <dst>",
   "  fleet pull <target> <src> <dst>",
   "  fleet logs <target> <path> [--tail N]",
@@ -41,9 +41,10 @@ const COMMAND_HELP = {
     "列出设备清单中的设备、架构、标签和 SSH 可达性。disabled 设备不会发起连接。",
   ].join("\n"),
   exec: [
-    "用法：fleet exec <target> -- <command>",
+    "用法：fleet exec <target> [--timeout SECONDS] -- <command>",
     "",
     "在设备名或 tag:<标签> 指定的设备上串行执行命令，输出带设备名前缀。",
+    "--timeout 为每台设备的执行超时，超时退出码为 124。",
   ].join("\n"),
   push: [
     "用法：fleet push <target> <src> <dst>",
@@ -107,7 +108,15 @@ function commandLs() {
 
 function commandExec(args) {
   const separator = args.indexOf("--");
-  if (separator !== 1 || separator === args.length - 1) fail(COMMAND_HELP.exec, 2);
+  if (separator < 1 || separator === args.length - 1) fail(COMMAND_HELP.exec, 2);
+  let timeout;
+  for (let index = 1; index < separator; index += 1) {
+    if (args[index] !== "--timeout" || index + 1 >= separator) fail(COMMAND_HELP.exec, 2);
+    const seconds = Number(args[index + 1]);
+    if (!Number.isInteger(seconds) || seconds < 1) fail("--timeout 必须是正整数秒数。", 2);
+    timeout = seconds * 1000;
+    index += 1;
+  }
   const devices = loadDevices();
   const targets = resolveTargets(devices, args[0]);
   const command = args.slice(separator + 1).map(shellQuote).join(" ");
@@ -116,7 +125,8 @@ function commandExec(args) {
     if (!fs.existsSync(key)) {
       return { code: 1, stdout: "", stderr: "SSH 密钥不存在：" + key };
     }
-    return run("ssh", [...sshArguments(device), command]);
+    const result = run("ssh", [...sshArguments(device), command], timeout);
+    return result.timedOut ? { ...result, code: 124 } : result;
   });
 }
 

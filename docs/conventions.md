@@ -11,6 +11,7 @@
 | agents/dsh/ | DSH 安装、兼容层、agent.env 模板和 DSH unit |
 | agents/_template/ | 新 Agent 的安装脚本、配置模板和说明模板 |
 | fleet/ | 设备清单、fleet CLI 和 fleet MCP |
+| verify/ | RuyiSDK/fleet 构建、分发、运行、收集、断言和本地报告 |
 | scripts/ | 顶层部署、启停、状态和 systemd 安装编排 |
 | docs/ | 当前用户手册、架构和项目约定 |
 
@@ -79,7 +80,17 @@ DSH 当前安装器将配置模板复制到：
 - exec、push、pull 和 logs 必须显式指定设备名或 tag:标签；
 - tag 没有匹配启用设备时直接失败，不默认选择全部设备；
 - 多设备目标当前串行执行；
+- fleet exec 可用 `--timeout <秒>` 限制每台设备的执行时间，超时退出码为 124；
 - pull 使用多设备 tag 时，分别写入 `<dst>/<设备名>/`，避免相互覆盖；
 - MCP 写工具默认不注册，只有 fleet/mcp/config.yaml 明确设置
   write_tools: true 才可用；
 - 每次 MCP 写工具调用都使用 logger 写入实际设备、完整命令和目标主机。
+
+## 7. Verify 约定
+
+- 任务定义放在 `verify/jobs/`，本地构建路径必须位于仓库内；
+- 多设备任务逐台执行，一台失败不阻断其余设备；
+- 同一设备同时只执行一个 job，锁被占用时排队等待；
+- 收集文件只能写入本次报告的 `devices/<设备名>/artifacts/`；
+- `verify/build/` 和 `verify/reports/` 是本地产物，不提交到仓库；
+- `result.json` 必须记录每步耗时、成败、设备汇总和明确的失败步骤。

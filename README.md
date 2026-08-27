@@ -19,6 +19,7 @@ fleet 设备中控 MVP。K3 上运行模型服务、多个 Agent 和共享的设
 - llama-server 负责加载 GGUF 模型并提供 OpenAI-compatible API；
 - 后续 Agent 从 3081 起分配端口，并共享 8080 模型 API；
 - fleet 通过 SSH 管理其他 RISC-V 开发板，当前 MCP 使用 stdio；
+- verify 在 K3 上构建产物，并通过 fleet 完成上传、运行、收集和断言；
 - 7080 是后续 Fleet MCP TCP 入口的预留端口，当前不监听。
 
 ## 2. 首次部署
@@ -140,7 +141,20 @@ gitignore 忽略，不要将私钥写入仓库。
 Fleet MCP 是 stdio server，默认只注册 fleet_list、fleet_status 和 fleet_logs。
 DSH 与 Codex CLI 的配置示例见[fleet MCP 文档](fleet/mcp/README.md)。
 
-## 6. 文档导航
+## 6. RuyiSDK 验证流水线
+
+在 K3 上安装 RuyiSDK 包管理器与 RISC-V 原生编译环境，然后运行端到端示例：
+
+~~~bash
+./verify/setup-ruyi.sh
+./verify/bin/verify run hello
+~~~
+
+示例会对 `tag:dev` 的设备逐台执行，报告写入 `verify/reports/hello-<序号>/`；任意
+设备失败时整体返回非零，但不会阻断其余设备。任务字段、报告结构和并发锁说明见
+[RuyiSDK 验证流水线](verify/README.md)。
+
+## 7. 文档导航
 
 | 文档 | 解决的问题 |
 |---|---|
@@ -155,11 +169,12 @@ DSH 与 Codex CLI 的配置示例见[fleet MCP 文档](fleet/mcp/README.md)。
 | [应用入口](docs/application/README.md) | 当前 Web UI 入口和应用边界 |
 | [运维手册](docs/operations-manual.md) | 下次访问、启停、日志、升级和故障排查 |
 | [Fleet MCP](fleet/mcp/README.md) | MCP 工具、审计和 DSH/Codex 配置 |
+| [RuyiSDK 验证流水线](verify/README.md) | 构建、上传、运行、收集、断言和报告 |
 
 推荐路径：项目总览 → 系统架构 → 模型服务部署 → DSH 部署 → 模型接入 →
 Fleet MCP（需要时）→ 运维手册。
 
-## 7. 固定部署基线
+## 8. 固定部署基线
 
 | 组件 | 固定值 |
 |---|---|
@@ -176,7 +191,7 @@ DSH 的固定 lockfile 位于 agents/dsh/pnpm-lock.yaml。一键部署找到它�
 frozen-lockfile；没有时会使用兼容回退流程，并提示首次部署成功后将生成的
 pnpm-lock.yaml 提交回仓库。
 
-## 8. 项目目录
+## 9. 项目目录
 
     k3-agent-server/
     ├── README.md
@@ -193,6 +208,10 @@ pnpm-lock.yaml 提交回仓库。
     │   ├── bin/fleet
     │   ├── devices.yaml.example
     │   └── mcp/
+    ├── verify/
+    │   ├── bin/verify
+    │   ├── jobs/hello.yaml
+    │   └── setup-ruyi.sh
     ├── scripts/
     └── docs/
 
