@@ -151,15 +151,21 @@ EOF
 export PATH="$HOME/.local/pnpm10/node_modules/.bin:$HOME/.local/bin:$PATH"
 export npm_config_nodedir="$HOME/.local/node"
 
+install -m 0644 \
+  agents/dsh/pnpm-lock.yaml \
+  "$HOME/dsh-runtime/pnpm-lock.yaml"
+
 pnpm --dir "$HOME/dsh-runtime" install \
   --registry=https://registry.npmjs.org \
-  --frozen-lockfile=false
+  --frozen-lockfile
 pnpm --dir "$HOME/dsh-runtime" rebuild
 ```
 
 注意：`pnpm-workspace.yaml` 中的 `allowBuilds` 不能省略。否则 pnpm 可能跳过 `node-pty` 构建，DSH 的 Shell 与终端能力会失败。
 
-如果仓库包含 `scripts/dsh-runtime/pnpm-lock.yaml`，部署脚本会先复制它并使用 `--frozen-lockfile`；手动部署时也应将该文件复制到 `$HOME/dsh-runtime/pnpm-lock.yaml`，再把安装命令的参数改为 `--frozen-lockfile`。仓库没有 lockfile 时，首次安装成功后建议将生成的 `pnpm-lock.yaml` 提交回仓库。
+当前仓库包含 `agents/dsh/pnpm-lock.yaml`，手动部署和一键部署都必须复制该文件并使用 `--frozen-lockfile`。只有在维护者明确移除 lockfile 的兼容场景下，才使用 `--frozen-lockfile=false`，并在首次安装成功后将生成的 lockfile 提交回仓库。
+
+如果设备上已有旧版 DSH 运行目录，且其 `package.json` 名称为 `dsh-runtime` 并声明了 `@deepseek-ai/dsh`，一键部署会复用该目录并按当前固定版本收敛。检测到无关 Node.js 项目时会停止部署，避免覆盖用户文件。
 
 检查 RISC-V 原生模块：
 
@@ -172,17 +178,17 @@ find "$HOME/dsh-runtime/node_modules" \
 
 ### 3.4 安装 K3 HTTP(S) 兼容层
 
-固定基线通过 Node 的 `--import` 加载项目脚本 `scripts/dsh-fetch-https-compat.mjs`：
+固定基线通过 Node 的 `--import` 加载项目脚本 `agents/dsh/dsh-fetch-https-compat.mjs`：
 
 ```bash
 install -m 0644 \
-  scripts/dsh-fetch-https-compat.mjs \
+  agents/dsh/dsh-fetch-https-compat.mjs \
   "$HOME/dsh-fetch-https-compat.mjs"
 ```
 
-该脚本不是 DSH 上游组件。它只对 URL host 为 `127.0.0.1:8080` 的本地模型 API 请求使用 Node 核心客户端，以兼容 K3 环境中可能被严格解析器拒绝的响应头；其他云端或外部 provider 请求继续使用原生 `fetch`。兼容层支持 string、URL 和 Request 输入，本地请求 body 仅支持 string、Buffer 和 TypedArray。
+该脚本不是 DSH 上游组件。它只对 URL host 为 `127.0.0.1:8080` 的本地模型 API 和 `api.deepseek.com` 的 DeepSeek 官方 API 请求使用启用了宽松响应头解析的 Node 核心客户端，以兼容 K3 环境中被严格解析器拒绝的响应头；其他云端或外部 provider 请求继续使用原生 `fetch`。兼容层支持 string、URL 和 Request 输入，兼容请求的 body 仅支持 string、Buffer 和 TypedArray。
 
-注意：兼容层仍会影响该 DSH 进程发往 `127.0.0.1:8080` 的请求，但不会接管云端 provider。升级 Node.js 或 DSH 后，应在临时端口验证是否仍需要它，不能未经验证直接删除。
+注意：兼容层会影响该 DSH 进程发往上述两个精确 host 的请求，但不会接管其他云端 provider。升级 Node.js 或 DSH 后，应在临时端口验证是否仍需要它，不能未经验证直接删除。
 
 ### 3.5 安装验证
 
@@ -200,7 +206,7 @@ DSH 版本必须是 `0.1.0-rc.8`，Web 命令帮助必须正常显示。
 
 ### 4.1 systemd 服务配置
 
-正式运行只使用 systemd 用户服务。DSH unit 安装到 `$HOME/.config/systemd/user/dsh-web.service`，项目源文件位于 `scripts/systemd/dsh-web.service`。关键配置如下：
+正式运行只使用 systemd 用户服务。DSH 主 unit 安装到 `$HOME/.config/systemd/user/agent-dsh.service`，旧名称 dsh-web.service 作为兼容别名；项目源文件位于 `agents/dsh/systemd/agent-dsh.service`。关键配置如下：
 
 ```ini
 [Unit]
@@ -213,6 +219,7 @@ Type=simple
 WorkingDirectory=%h/dsh-runtime
 Environment=PATH=%h/.local/bin:%h/.local/node/bin:/usr/local/bin:/usr/bin:/bin
 Environment=DSH_LOCAL_API_KEY=local
+EnvironmentFile=-%h/.config/k3-agent-server/agents/dsh/agent.env
 ExecStartPre=/usr/bin/test -x %h/.local/bin/node
 ExecStartPre=/usr/bin/test -f %h/dsh-fetch-https-compat.mjs
 ExecStartPre=/usr/bin/test -f %h/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js
@@ -222,6 +229,7 @@ RestartSec=5
 
 [Install]
 WantedBy=default.target
+Alias=dsh-web.service
 ```
 
 `Wants` 会在启动 DSH 时尝试启动本地模型，但不会把 DSH 强制绑定到本地模型；只使用云端提供方时，DSH 仍可以独立运行。
@@ -237,7 +245,7 @@ bash scripts/start.sh
 ### 4.2 启动验证
 
 ```bash
-systemctl --user status dsh-web.service
+systemctl --user status agent-dsh.service
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3080/
 ```
 
@@ -293,9 +301,9 @@ bash scripts/start.sh
 ### 6.2 日志和重启
 
 ```bash
-journalctl --user -u dsh-web.service -n 100 --no-pager
-journalctl --user -u dsh-web.service -f
-systemctl --user restart dsh-web.service
+journalctl --user -u agent-dsh.service -n 100 --no-pager
+journalctl --user -u agent-dsh.service -f
+systemctl --user restart agent-dsh.service
 ```
 
 ### 6.3 常见问题
@@ -305,7 +313,7 @@ systemctl --user restart dsh-web.service
 | `node` 不存在 | 检查 `$HOME/.local/bin/node` 软链接 |
 | DSH 版本不对 | 检查 `$HOME/dsh-runtime/package.json` 和 `pnpm-lock.yaml` |
 | `pty.node` 不存在 | 检查 `allowBuilds`、编译工具和 `pnpm rebuild` 输出 |
-| unit 启动失败 | 查看 `journalctl --user -u dsh-web.service` |
+| unit 启动失败 | 查看 `journalctl --user -u agent-dsh.service` |
 | 3080 被占用 | 用 `ss -lntp` 找到实际监听进程 |
 | 页面打开但模型失败 | 先检查 8080 API，再检查提供方配置和 DSH journal |
 | HTTP 解析错误 | 确认 unit 已加载兼容层，且项目脚本已复制到 `$HOME` |

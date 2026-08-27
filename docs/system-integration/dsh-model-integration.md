@@ -208,7 +208,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3080/
 
 # 服务日志
 journalctl --user -u llama-server.service -n 100 --no-pager
-journalctl --user -u dsh-web.service -n 100 --no-pager
+journalctl --user -u agent-dsh.service -n 100 --no-pager
 ```
 
 ### 7.3 常见问题

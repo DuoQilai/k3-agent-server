@@ -101,15 +101,32 @@ MODEL_FILE="deepseek-r1-distill-qwen-1.5b-q4_0.gguf"
 MODEL_URL="https://archive.spacemit.com/spacemit-ai/model_zoo/llm/$MODEL_FILE"
 
 mkdir -p "$MODEL_DIR"
-curl --fail --location --retry 3 --continue-at - \
-  "$MODEL_URL" -o "$MODEL_DIR/$MODEL_FILE.part"
-mv "$MODEL_DIR/$MODEL_FILE.part" "$MODEL_DIR/$MODEL_FILE"
-test -s "$MODEL_DIR/$MODEL_FILE"
+MODEL_PATH="$MODEL_DIR/$MODEL_FILE"
+
+if [[ ! -s "$MODEL_PATH" ]]; then
+  if ! curl --fail --location --retry 3 --continue-at - \
+    "$MODEL_URL" -o "$MODEL_PATH.part"; then
+    REMOTE_SIZE="$(curl --fail --silent --show-error --location --head "$MODEL_URL" \
+      | awk 'tolower($1) == "content-length:" { gsub("\r", "", $2); size = $2 } END { print size }' || true)"
+    LOCAL_SIZE=0
+    if [[ -f "$MODEL_PATH.part" ]]; then
+      LOCAL_SIZE="$(wc -c < "$MODEL_PATH.part" | tr -d '[:space:]')"
+    fi
+    [[ -s "$MODEL_PATH.part" && -n "$REMOTE_SIZE" && "$LOCAL_SIZE" == "$REMOTE_SIZE" ]]
+  fi
+  mv "$MODEL_PATH.part" "$MODEL_PATH"
+fi
+
+ACTUAL_HASH="$(sha256sum "$MODEL_PATH" | awk '{ print $1 }')"
+if [[ -f "$MODEL_PATH.sha256" ]]; then
+  RECORDED_HASH="$(awk 'NF { print $1; exit }' "$MODEL_PATH.sha256")"
+  [[ "$RECORDED_HASH" == "$ACTUAL_HASH" ]]
+else
+  printf '%s  %s\n' "$ACTUAL_HASH" "$MODEL_PATH" > "$MODEL_PATH.sha256"
+fi
 ```
 
-```bash
-sha256sum "$MODEL_DIR/$MODEL_FILE" | tee "$MODEL_DIR/$MODEL_FILE.sha256"
-```
+如果续传返回 HTTP 416，只有远端 `Content-Length` 与 `.part` 文件大小一致时才继续。已有 SHA-256 记录时必须比对，不能用当前文件的新哈希覆盖旧记录。
 
 ### 4.2 首次命令行推理
 
@@ -153,7 +170,7 @@ curl -fsS http://127.0.0.1:8080/v1/models
 
 ### 5.2 systemd 服务配置
 
-正式运行使用 `$HOME/.config/systemd/user/llama-server.service`。项目提供的完整配置位于 `scripts/systemd/llama-server.service`，关键内容如下：
+正式运行使用 `$HOME/.config/systemd/user/llama-server.service`。项目提供的完整配置位于 `model/systemd/llama-server.service`，关键内容如下：
 
 ```ini
 [Unit]
@@ -178,7 +195,7 @@ WantedBy=default.target
 ```bash
 mkdir -p "$HOME/.config/systemd/user"
 install -m 0644 \
-  scripts/systemd/llama-server.service \
+  model/systemd/llama-server.service \
   "$HOME/.config/systemd/user/llama-server.service"
 
 systemctl --user daemon-reload

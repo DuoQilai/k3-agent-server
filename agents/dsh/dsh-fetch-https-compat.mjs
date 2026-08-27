@@ -1,14 +1,15 @@
 /**
  * DeepSeek Harness / Node 24 RISC-V HTTP compatibility shim.
  *
- * Only the local llama-server at 127.0.0.1:8080 is routed through Node's
- * core HTTP client. All other origins use the native Fetch implementation,
- * so cloud providers keep the complete native Fetch semantics.
+ * Only hosts known to return response headers rejected by Node's strict Fetch
+ * parser are routed through Node's core HTTP client with lenient parsing:
+ * the local llama-server and the official DeepSeek API. All other origins use
+ * the native Fetch implementation.
  */
 import http from "node:http";
 import https from "node:https";
 
-const COMPAT_HOSTS = new Set(["127.0.0.1:8080"]);
+const COMPAT_HOSTS = new Set(["127.0.0.1:8080", "api.deepseek.com"]);
 const NULL_BODY_STATUS = new Set([204, 205, 304]);
 const nativeFetch = globalThis.fetch?.bind(globalThis);
 
@@ -49,7 +50,7 @@ function requestOverNode(input, init = {}, url) {
 
   if (body !== undefined && body !== null && !isSupportedBody(body)) {
     throw new TypeError(
-      "The local llama-server compatibility layer only supports string, Buffer, and typed-array request bodies",
+      "The K3 HTTP(S) compatibility layer only supports string, Buffer, and typed-array request bodies",
     );
   }
 
@@ -72,79 +73,85 @@ function requestOverNode(input, init = {}, url) {
       cleanupAbort();
     };
 
-    const req = transport.request(url, { method, headers: requestHeaders }, (res) => {
-      const responseHeaders = new Headers();
-      for (const [name, rawValue] of Object.entries(res.headers)) {
-        if (name.toLowerCase() === "set-cookie" && Array.isArray(rawValue)) {
-          for (const value of rawValue) {
-            try {
-              responseHeaders.append(name, value);
-            } catch {
-              // Ignore malformed advisory headers and preserve the response.
+    const req = transport.request(
+      url,
+      { method, headers: requestHeaders, insecureHTTPParser: true },
+      (res) => {
+        const responseHeaders = new Headers();
+        for (const [name, rawValue] of Object.entries(res.headers)) {
+          if (name.toLowerCase() === "set-cookie" && Array.isArray(rawValue)) {
+            for (const value of rawValue) {
+              try {
+                responseHeaders.append(name, value);
+              } catch {
+                // Ignore malformed advisory headers and preserve the response.
+              }
             }
+            continue;
           }
-          continue;
+
+          const value = Array.isArray(rawValue) ? rawValue.join(", ") : rawValue;
+          if (value === undefined) continue;
+          try {
+            responseHeaders.set(name, value);
+          } catch {
+            // Ignore malformed advisory headers and preserve the response.
+          }
         }
 
-        const value = Array.isArray(rawValue) ? rawValue.join(", ") : rawValue;
-        if (value === undefined) continue;
-        try {
-          responseHeaders.set(name, value);
-        } catch {
-          // Ignore malformed advisory headers and preserve the response.
-        }
-      }
-
-      const status = res.statusCode ?? 200;
-      const hasNullBody = NULL_BODY_STATUS.has(status);
-      const stream = hasNullBody
-        ? null
-        : new ReadableStream({
-            start(controller) {
-              responseController = controller;
-              res.on("data", (chunk) => controller.enqueue(chunk));
-              res.on("end", () => {
-                if (!streamFinished) {
-                  streamFinished = true;
-                  controller.close();
-                }
+        const status = res.statusCode ?? 200;
+        const hasNullBody = NULL_BODY_STATUS.has(status);
+        const stream = hasNullBody
+          ? null
+          : new ReadableStream({
+              start(controller) {
+                responseController = controller;
+                res.on("data", (chunk) => controller.enqueue(chunk));
+                res.on("end", () => {
+                  if (!streamFinished) {
+                    streamFinished = true;
+                    controller.close();
+                  }
+                  cleanupAbort();
+                });
+                res.on("error", failStream);
+                res.on("close", () => {
+                  if (!streamFinished) {
+                    failStream(new Error("compatibility response closed before completion"));
+                  }
+                  else cleanupAbort();
+                });
+              },
+              cancel(reason) {
+                streamFinished = true;
                 cleanupAbort();
-              });
-              res.on("error", failStream);
-              res.on("close", () => {
-                if (!streamFinished) failStream(new Error("local response closed before completion"));
-                else cleanupAbort();
-              });
-            },
-            cancel(reason) {
-              streamFinished = true;
-              cleanupAbort();
-              res.destroy(reason instanceof Error ? reason : undefined);
-            },
+                res.destroy(reason instanceof Error ? reason : undefined);
+              },
+            });
+
+        if (hasNullBody) {
+          res.resume();
+          res.destroy();
+          res.once("end", cleanupAbort);
+          res.once("close", cleanupAbort);
+        }
+
+        try {
+          const response = new Response(stream, {
+            status,
+            statusText: res.statusMessage ?? "",
+            headers: responseHeaders,
           });
-
-      if (hasNullBody) {
-        res.resume();
-        res.destroy();
-        res.once("end", cleanupAbort);
-        res.once("close", cleanupAbort);
-      }
-
-      try {
-        const response = new Response(stream, {
-          status,
-          statusText: res.statusMessage ?? "",
-          headers: responseHeaders,
-        });
-        settled = true;
-        resolve(response);
-      } catch (error) {
-        settled = true;
-        cleanupAbort();
-        res.destroy(error);
-        reject(error);
-      }
-    });
+          settled = true;
+          resolve(response);
+        } catch (error) {
+          settled = true;
+          cleanupAbort();
+          res.destroy(error);
+          reject(error);
+        }
+      },
+    );
 
     req.on("error", (error) => {
       if (!settled) {
