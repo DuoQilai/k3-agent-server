@@ -9,6 +9,23 @@ UNIT_TARGET_DIR="$HOME/.config/systemd/user"
 AGENT_CONFIG_DIR="$HOME/.config/k3-agent-server/agents/dsh"
 AGENT_CONFIG_TARGET="$AGENT_CONFIG_DIR/agent.env"
 
+usage() {
+  cat <<'EOF'
+用法：bash scripts/install-systemd-user-services.sh
+
+安装 llama-server.service 和 agent-dsh.service，保留 dsh-web.service
+兼容别名，并创建 DSH 用户私有的 agent.env 配置。
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+elif (( $# > 0 )); then
+  usage >&2
+  exit 2
+fi
+
 command -v systemctl >/dev/null || {
   echo "找不到 systemctl；请在 K3 Linux 服务设备上执行。" >&2
   exit 1

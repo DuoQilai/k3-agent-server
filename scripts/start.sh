@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+用法：bash scripts/start.sh
+
+依次启动 llama-server.service 和 agent-dsh.service，并等待 8080 模型 API
+与 3080 DSH Web 服务就绪。
+EOF
+}
+
 wait_for_http() {
   local name="$1"
   local url="$2"
@@ -18,6 +27,14 @@ wait_for_http() {
   echo "$name 启动超时。查看日志：journalctl --user -u $name -n 100 --no-pager" >&2
   return 1
 }
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+elif (( $# > 0 )); then
+  usage >&2
+  exit 2
+fi
 
 command -v systemctl >/dev/null || {
   echo "找不到 systemctl；请在 K3 Linux 服务设备上执行。" >&2

@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+用法：bash scripts/stop.sh
+
+尝试停止 agent-dsh.service、兼容旧 unit dsh-web.service 和
+llama-server.service，并聚合报告停止结果。
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+elif (( $# > 0 )); then
+  usage >&2
+  exit 2
+fi
+
 command -v systemctl >/dev/null || {
   echo "找不到 systemctl；请在 K3 Linux 服务设备上执行。" >&2
   exit 1
