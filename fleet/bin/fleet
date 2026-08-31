@@ -18,7 +18,7 @@ import {
 const HELP = [
   "用法：",
   "  fleet ls",
-  "  fleet exec <target> -- <command>",
+  "  fleet exec <target> [--timeout SECONDS] [--json] -- <command>",
   "  fleet push <target> <src> <dst>",
   "  fleet pull <target> <src> <dst>",
   "  fleet logs <target> <path> [--tail N]",
@@ -41,9 +41,11 @@ const COMMAND_HELP = {
     "列出设备清单中的设备、架构、标签和 SSH 可达性。disabled 设备不会发起连接。",
   ].join("\n"),
   exec: [
-    "用法：fleet exec <target> -- <command>",
+    "用法：fleet exec <target> [--timeout SECONDS] [--json] -- <command>",
     "",
     "在设备名或 tag:<标签> 指定的设备上串行执行命令，输出带设备名前缀。",
+    "--timeout 为每台设备的执行超时，超时退出码为 124。",
+    "--json 输出每台设备的结构化执行结果，包含设备端真实退出码和传输状态。",
   ].join("\n"),
   push: [
     "用法：fleet push <target> <src> <dst>",
@@ -74,22 +76,48 @@ function writePrefixed(name, content, stream) {
   }
 }
 
-function runForTargets(targets, action) {
+function resultCode(result) {
+  if (result.timedOut) return 124;
+  if (result.transportError) return result.code ?? 1;
+  return result.remoteCode ?? result.code;
+}
+
+function runForTargets(targets, action, options = {}) {
   let failed = false;
   for (const device of targets) {
     const result = action(device);
-    writePrefixed(device.name, result.stdout, process.stdout);
-    writePrefixed(device.name, result.stderr, process.stderr);
-    if (result.code !== 0) {
+    if (options.json) {
+      process.stdout.write(JSON.stringify({
+        schema_version: 1,
+        device: device.name,
+        exit_code: result.remoteCode ?? null,
+        process_exit_code: result.code ?? null,
+        timed_out: Boolean(result.timedOut),
+        transport_error: Boolean(result.transportError),
+        signal: result.signal ?? null,
+        error: result.error ?? null,
+        stdout: result.stdout ?? "",
+        stderr: result.stderr ?? "",
+      }) + "\n");
+    } else {
+      writePrefixed(device.name, result.stdout, process.stdout);
+      writePrefixed(device.name, result.stderr, process.stderr);
+    }
+    const code = resultCode(result);
+    if (code !== 0) {
       failed = true;
-      process.stderr.write("[" + device.name + "] 退出码：" + result.code + "\n");
+      if (!options.json) process.stderr.write("[" + device.name + "] 退出码：" + code + "\n");
     }
   }
   return failed ? 1 : 0;
 }
 
+function configuredDevices() {
+  return loadDevices(process.env.FLEET_DEVICES_PATH ? path.resolve(process.env.FLEET_DEVICES_PATH) : undefined);
+}
+
 function commandLs() {
-  const devices = loadDevices();
+  const devices = configuredDevices();
   let failed = false;
   console.log("NAME\tHOST\tARCH\tTAGS\tENABLED\tSTATUS");
   for (const device of devices) {
@@ -107,22 +135,52 @@ function commandLs() {
 
 function commandExec(args) {
   const separator = args.indexOf("--");
-  if (separator !== 1 || separator === args.length - 1) fail(COMMAND_HELP.exec, 2);
-  const devices = loadDevices();
+  if (separator < 1 || separator === args.length - 1) fail(COMMAND_HELP.exec, 2);
+  let timeout;
+  let json = false;
+  for (let index = 1; index < separator; index += 1) {
+    if (args[index] === "--json") {
+      json = true;
+      continue;
+    }
+    if (args[index] !== "--timeout" || index + 1 >= separator) fail(COMMAND_HELP.exec, 2);
+    const seconds = Number(args[index + 1]);
+    if (!Number.isInteger(seconds) || seconds < 1) fail("--timeout 必须是正整数秒数。", 2);
+    timeout = seconds * 1000;
+    index += 1;
+  }
+  const devices = configuredDevices();
   const targets = resolveTargets(devices, args[0]);
   const command = args.slice(separator + 1).map(shellQuote).join(" ");
+  const marker = "__FLEET_REMOTE_EXIT__";
   return runForTargets(targets, (device) => {
     const key = expandHome(String(device.ssh_key));
     if (!fs.existsSync(key)) {
-      return { code: 1, stdout: "", stderr: "SSH 密钥不存在：" + key };
+      return { code: 1, stdout: "", stderr: "SSH 密钥不存在：" + key, transportError: true, remoteCode: null };
     }
-    return run("ssh", [...sshArguments(device), command]);
-  });
+    const wrappedCommand = "sh -c " + shellQuote(command)
+      + "; remote_code=$?; printf '%s%s\\n' " + shellQuote(marker) + " \"$remote_code\"; exit 0";
+    const result = run("ssh", [...sshArguments(device), wrappedCommand], timeout);
+    if (result.timedOut || result.error) {
+      return { ...result, transportError: true, remoteCode: null };
+    }
+    const markerMatch = /__FLEET_REMOTE_EXIT__(\d+)(?:\r?\n)?$/.exec(result.stdout);
+    if (!markerMatch) {
+      return { ...result, transportError: true, remoteCode: null, error: "远端执行结果缺少退出码标记。" };
+    }
+    const remoteCode = Number(markerMatch[1]);
+    return {
+      ...result,
+      stdout: result.stdout.slice(0, markerMatch.index),
+      remoteCode,
+      transportError: false,
+    };
+  }, { json });
 }
 
 function commandCopy(command, args) {
   if (args.length !== 3) fail(COMMAND_HELP[command], 2);
-  const devices = loadDevices();
+  const devices = configuredDevices();
   const targets = resolveTargets(devices, args[0]);
   const source = args[1];
   const destination = args[2];
@@ -153,7 +211,7 @@ function commandCopy(command, args) {
 
 function commandLogs(args) {
   if (args.length < 2) fail(COMMAND_HELP.logs, 2);
-  const devices = loadDevices();
+  const devices = configuredDevices();
   const targets = resolveTargets(devices, args[0]);
   const remotePath = args[1];
   let tail = 100;

@@ -90,16 +90,16 @@ function parsePair(text, target) {
   return { key, value };
 }
 
-function loadDevices() {
-  if (!fs.existsSync(DEVICES_PATH)) {
-    throw new Error("找不到设备清单：" + DEVICES_PATH + "。请复制 fleet/devices.yaml.example 后填写。");
+function loadDevices(devicesPath = DEVICES_PATH) {
+  if (!fs.existsSync(devicesPath)) {
+    throw new Error("找不到设备清单：" + devicesPath + "。请复制 fleet/devices.yaml.example 后填写。");
   }
 
   const devices = [];
   let inDevices = false;
   let current = null;
   let pendingList = null;
-  const source = fs.readFileSync(DEVICES_PATH, "utf8");
+  const source = fs.readFileSync(devicesPath, "utf8");
 
   for (const [lineNumber, originalLine] of source.split(/\r?\n/).entries()) {
     const line = stripComment(originalLine);
@@ -212,12 +212,18 @@ function run(command, args, timeout = undefined) {
       code: result.status ?? 1,
       stdout: result.stdout ?? "",
       stderr: result.stderr ?? result.error.message,
+      timedOut: result.error.code === "ETIMEDOUT",
+      signal: result.signal ?? null,
+      error: result.error.message,
     };
   }
   return {
     code: result.status ?? 1,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
+    timedOut: false,
+    signal: result.signal ?? null,
+    error: null,
   };
 }
 

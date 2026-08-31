@@ -1,0 +1,753 @@
+#!/usr/bin/env node
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { loadDevices, resolveTargets } from "../../fleet/lib/core.mjs";
+
+const VERIFY_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const REPO_ROOT = path.dirname(VERIFY_DIR);
+const JOBS_DIR = resolveOverride("VERIFY_JOBS_DIR", path.join(VERIFY_DIR, "jobs"));
+const REPORTS_DIR = resolveOverride("VERIFY_REPORTS_DIR", path.join(VERIFY_DIR, "reports"));
+const FLEET_BIN = resolveOverride("VERIFY_FLEET_BIN", path.join(REPO_ROOT, "fleet", "bin", "fleet"));
+const DEVICES_PATH = resolveOverride("VERIFY_DEVICES_PATH", path.join(REPO_ROOT, "fleet", "devices.yaml"));
+const LOCK_DIR = resolveOverride("VERIFY_LOCK_DIR", path.join(os.tmpdir(), "k3-agent-server-verify-locks"));
+const PYTHON = process.env.VERIFY_PYTHON || "python3";
+const MAX_OUTPUT_BUFFER = 20 * 1024 * 1024;
+const LOCK_HELPER = [
+  "import fcntl, os, sys",
+  "fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600)",
+  "try:",
+  "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+  "except BlockingIOError:",
+  "    print('waiting', flush=True)",
+  "    fcntl.flock(fd, fcntl.LOCK_EX)",
+  "print('acquired', flush=True)",
+  "sys.stdin.buffer.read()",
+].join("\n");
+
+const HELP = [
+  "用法：verify run <job>",
+  "",
+  "从 verify/jobs/<job>.yaml 读取任务，执行 build → push → exec → pull → assert。",
+  "报告写入 verify/reports/<job>-<序号>/。",
+].join("\n");
+
+function resolveOverride(name, fallback) {
+  return process.env[name] ? path.resolve(process.env[name]) : fallback;
+}
+
+function stripComment(line) {
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (quote === '"') {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quote = null;
+    } else if (quote === "'") {
+      if (character === "'") {
+        if (line[index + 1] === "'") index += 1;
+        else quote = null;
+      }
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === "#" && (index === 0 || /\s/.test(line[index - 1]))) {
+      return line.slice(0, index);
+    }
+  }
+  return line;
+}
+
+function splitPair(text, lineNumber) {
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote === '"') {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quote = null;
+    } else if (quote === "'") {
+      if (character === "'") {
+        if (text[index + 1] === "'") index += 1;
+        else quote = null;
+      }
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === ":") {
+      const key = text.slice(0, index).trim();
+      if (!key) throw new Error("任务 YAML 第 " + lineNumber + " 行字段名为空。");
+      return [parseScalar(key), text.slice(index + 1).trim()];
+    }
+  }
+  throw new Error("任务 YAML 第 " + lineNumber + " 行缺少冒号。");
+}
+
+function parseScalar(rawValue) {
+  const value = rawValue.trim();
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    try {
+      return JSON.parse(value);
+    } catch {
+      throw new Error("无法解析 YAML 字符串：" + value);
+    }
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replaceAll("''", "'");
+  }
+  if (/^-?\d+$/.test(value)) return Number(value);
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return value;
+}
+
+function assignUnique(target, key, value, lineNumber) {
+  if (Object.hasOwn(target, key)) {
+    throw new Error("任务 YAML 第 " + lineNumber + " 行字段重复：" + key);
+  }
+  target[key] = value;
+}
+
+function parseJob(source) {
+  const job = Object.create(null);
+  let section = null;
+  const sections = new Set(["artifacts", "run", "collect", "assert"]);
+
+  for (const [index, originalLine] of source.split(/\r?\n/).entries()) {
+    const lineNumber = index + 1;
+    if (originalLine.includes("\t")) throw new Error("任务 YAML 第 " + lineNumber + " 行不能使用制表符缩进。");
+    const line = stripComment(originalLine);
+    if (!line.trim()) continue;
+    const indent = line.length - line.trimStart().length;
+    if (indent !== 0 && indent !== 2) {
+      throw new Error("任务 YAML 第 " + lineNumber + " 行只支持 0 或 2 个空格缩进。");
+    }
+    const [rawKey, rawValue] = splitPair(line.trim(), lineNumber);
+    if (typeof rawKey !== "string" || !rawKey) throw new Error("任务 YAML 第 " + lineNumber + " 行字段名无效。");
+
+    if (indent === 0) {
+      section = null;
+      if (sections.has(rawKey)) {
+        if (rawValue !== "") throw new Error("任务字段 " + rawKey + " 必须使用缩进映射。");
+        assignUnique(job, rawKey, Object.create(null), lineNumber);
+        section = rawKey;
+      } else {
+        if (rawValue === "") throw new Error("任务字段 " + rawKey + " 不能为空。");
+        assignUnique(job, rawKey, parseScalar(rawValue), lineNumber);
+      }
+      continue;
+    }
+
+    if (!section) throw new Error("任务 YAML 第 " + lineNumber + " 行没有所属的映射字段。");
+    if (rawValue === "") throw new Error("任务 YAML 第 " + lineNumber + " 行的值不能为空。");
+    assignUnique(job[section], rawKey, parseScalar(rawValue), lineNumber);
+  }
+
+  validateJob(job);
+  return job;
+}
+
+function validateJob(job) {
+  const allowed = new Set(["target", "build", "artifacts", "run", "collect", "assert"]);
+  for (const key of Object.keys(job)) {
+    if (!allowed.has(key)) throw new Error("未知任务字段：" + key);
+  }
+  for (const key of allowed) {
+    if (!Object.hasOwn(job, key)) throw new Error("任务缺少字段：" + key);
+  }
+  for (const key of ["target", "build"]) {
+    if (typeof job[key] !== "string" || !job[key].trim()) throw new Error("任务字段必须是非空字符串：" + key);
+  }
+  for (const key of ["artifacts", "run", "collect", "assert"]) {
+    if (!job[key] || typeof job[key] !== "object" || Array.isArray(job[key])) {
+      throw new Error("任务字段必须是映射：" + key);
+    }
+  }
+  if (Object.keys(job.artifacts).length === 0) throw new Error("artifacts 至少需要一个映射。");
+  validateStringMap(job.artifacts, "artifacts");
+  validateStringMap(job.collect, "collect");
+
+  const runKeys = new Set(["command", "timeout"]);
+  for (const key of Object.keys(job.run)) {
+    if (!runKeys.has(key)) throw new Error("未知 run 字段：" + key);
+  }
+  if (typeof job.run.command !== "string" || !job.run.command.trim()) throw new Error("run.command 必须是非空字符串。");
+  if (!Number.isInteger(job.run.timeout) || job.run.timeout < 1) throw new Error("run.timeout 必须是正整数秒数。");
+
+  const assertKeys = new Set(["exit_code", "output_regex"]);
+  for (const key of Object.keys(job.assert)) {
+    if (!assertKeys.has(key)) throw new Error("未知 assert 字段：" + key);
+  }
+  if (!Object.hasOwn(job.assert, "exit_code") && !Object.hasOwn(job.assert, "output_regex")) {
+    throw new Error("assert 至少需要 exit_code 或 output_regex。");
+  }
+  if (Object.hasOwn(job.assert, "exit_code") && !Number.isInteger(job.assert.exit_code)) {
+    throw new Error("assert.exit_code 必须是整数。");
+  }
+  if (Object.hasOwn(job.assert, "output_regex")) {
+    if (typeof job.assert.output_regex !== "string" || !job.assert.output_regex) {
+      throw new Error("assert.output_regex 必须是非空字符串。");
+    }
+    try {
+      new RegExp(job.assert.output_regex, "m");
+    } catch (error) {
+      throw new Error("assert.output_regex 无效：" + error.message);
+    }
+  }
+}
+
+function validateStringMap(mapping, name) {
+  for (const [source, destination] of Object.entries(mapping)) {
+    if (!source || typeof destination !== "string" || !destination) {
+      throw new Error(name + " 的源路径和目标路径都必须是非空字符串。");
+    }
+  }
+}
+
+function runCommand(command, args, options = {}) {
+  const started = Date.now();
+  const result = spawnSync(command, args, {
+    cwd: options.cwd,
+    encoding: "utf8",
+    env: options.env ?? process.env,
+    maxBuffer: MAX_OUTPUT_BUFFER,
+    timeout: options.timeout,
+  });
+  const ended = Date.now();
+  return {
+    command: [command, ...args],
+    started_at: new Date(started).toISOString(),
+    ended_at: new Date(ended).toISOString(),
+    duration_ms: ended - started,
+    exit_code: result.status,
+    signal: result.signal,
+    timed_out: result.error?.code === "ETIMEDOUT",
+    error: result.error && result.error.code !== "ETIMEDOUT" ? result.error.message : null,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+  };
+}
+
+function parseFleetExecResult(processResult, deviceName) {
+  if (processResult.timed_out) {
+    return {
+      ...processResult,
+      exit_code: null,
+      process_exit_code: processResult.exit_code,
+      transport_error: false,
+    };
+  }
+  const line = processResult.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1);
+  let envelope;
+  try {
+    envelope = JSON.parse(line ?? "");
+  } catch {
+    return {
+      ...processResult,
+      exit_code: null,
+      process_exit_code: processResult.exit_code,
+      transport_error: true,
+      error: "fleet --json 返回了无法解析的结果。",
+    };
+  }
+  if (!envelope || envelope.schema_version !== 1 || envelope.device !== deviceName
+      || !Object.hasOwn(envelope, "exit_code") || !Object.hasOwn(envelope, "transport_error")) {
+    return {
+      ...processResult,
+      exit_code: null,
+      process_exit_code: processResult.exit_code,
+      transport_error: true,
+      error: "fleet --json 返回了不完整的设备结果。",
+    };
+  }
+  return {
+    ...processResult,
+    stdout: typeof envelope.stdout === "string" ? envelope.stdout : "",
+    stderr: typeof envelope.stderr === "string" ? envelope.stderr : "",
+    exit_code: Number.isInteger(envelope.exit_code) ? envelope.exit_code : null,
+    process_exit_code: processResult.exit_code,
+    signal: envelope.signal ?? processResult.signal ?? null,
+    timed_out: Boolean(envelope.timed_out),
+    transport_error: Boolean(envelope.transport_error),
+    error: envelope.error ?? null,
+  };
+}
+
+function saveLog(filePath, result) {
+  const header = [
+    "command: " + result.command.join(" "),
+    "started_at: " + result.started_at,
+    "ended_at: " + result.ended_at,
+    "duration_ms: " + result.duration_ms,
+    "exit_code: " + String(result.exit_code),
+    "signal: " + String(result.signal),
+    "timed_out: " + String(result.timed_out),
+    "transport_error: " + String(result.transport_error ?? false),
+    "process_exit_code: " + String(result.process_exit_code ?? result.exit_code),
+    result.error ? "error: " + result.error : null,
+    "",
+    "--- stdout ---",
+    result.stdout,
+    "--- stderr ---",
+    result.stderr,
+  ].filter((line) => line !== null).join("\n");
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, header.endsWith("\n") ? header : header + "\n");
+}
+
+function stepFromRun(result, logPath, reportDir) {
+  return {
+    success: !result.timed_out && !result.error && !result.transport_error && result.exit_code !== null,
+    started_at: result.started_at,
+    ended_at: result.ended_at,
+    duration_ms: result.duration_ms,
+    exit_code: result.exit_code,
+    signal: result.signal,
+    timed_out: result.timed_out,
+    transport_error: Boolean(result.transport_error),
+    process_exit_code: result.process_exit_code ?? result.exit_code,
+    error: result.error,
+    log: path.relative(reportDir, logPath),
+  };
+}
+
+function allocateReportDir(jobName) {
+  fs.mkdirSync(REPORTS_DIR, { recursive: true });
+  for (let sequence = 1; ; sequence += 1) {
+    const reportDir = path.join(REPORTS_DIR, jobName + "-" + sequence);
+    try {
+      fs.mkdirSync(reportDir);
+      return { reportDir, sequence };
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+  }
+}
+
+function writeResult(reportDir, result) {
+  const resultPath = path.join(reportDir, "result.json");
+  const temporaryPath = resultPath + ".tmp";
+  fs.writeFileSync(temporaryPath, JSON.stringify(result, null, 2) + "\n");
+  fs.renameSync(temporaryPath, resultPath);
+}
+
+function ensureInside(baseDir, relativePath, label) {
+  if (path.isAbsolute(relativePath)) throw new Error(label + " 必须是相对路径：" + relativePath);
+  const resolved = path.resolve(baseDir, relativePath);
+  const prefix = baseDir.endsWith(path.sep) ? baseDir : baseDir + path.sep;
+  if (resolved !== baseDir && !resolved.startsWith(prefix)) throw new Error(label + " 不能越出目标目录：" + relativePath);
+  return resolved;
+}
+
+function preflightJobPaths(job) {
+  const artifacts = Object.entries(job.artifacts).map(([localPath, remotePath]) => ({
+    localPath,
+    remotePath,
+    sourcePath: ensureInside(REPO_ROOT, localPath, "artifacts 源路径"),
+  }));
+  for (const localPath of Object.values(job.collect)) {
+    ensureInside(REPO_ROOT, localPath, "collect 目标路径");
+  }
+  return { artifacts };
+}
+
+function failedRun(command, args, error) {
+  const now = Date.now();
+  return {
+    command: [command, ...args],
+    started_at: new Date(now).toISOString(),
+    ended_at: new Date(now).toISOString(),
+    duration_ms: 0,
+    exit_code: null,
+    signal: null,
+    timed_out: false,
+    error: error instanceof Error ? error.message : String(error),
+    stdout: "",
+    stderr: "",
+  };
+}
+
+function acquireKernelLock(lockPath, label, waitMessage = "锁被占用，排队等待…") {
+  fs.mkdirSync(LOCK_DIR, { recursive: true });
+  const started = Date.now();
+  const child = spawn(PYTHON, ["-c", LOCK_HELPER, lockPath], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let output = "";
+  let errorOutput = "";
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let waitingLogged = false;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (!waitingLogged && output.includes("waiting\n")) {
+        waitingLogged = true;
+        console.log("[" + label + "] " + waitMessage);
+      }
+      if (output.includes("acquired\n") && !settled) {
+        settled = true;
+        resolve({
+          waited_ms: Date.now() - started,
+          release: () => releaseKernelLock(child),
+        });
+      }
+    });
+    child.stderr.on("data", (chunk) => { errorOutput += chunk; });
+    child.once("error", (error) => {
+      if (!settled) reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      if (!settled) reject(new Error("" + label + " 锁进程退出（code=" + code + ", signal=" + signal + ")：" + errorOutput));
+    });
+  });
+}
+
+function releaseKernelLock(child) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (error) reject(error);
+      else resolve();
+    };
+    child.once("error", finish);
+    child.once("close", (code, signal) => {
+      if (code === 0 && signal === null) finish();
+      else finish(new Error("锁进程释放失败（code=" + code + ", signal=" + signal + ")"));
+    });
+    if (child.exitCode !== null || child.signalCode !== null) {
+      if (child.exitCode === 0 && child.signalCode === null) finish();
+      else finish(new Error("锁进程释放失败（code=" + child.exitCode + ", signal=" + child.signalCode + ")"));
+      return;
+    }
+    child.stdin.end();
+  });
+}
+
+function deviceLockPath(deviceName) {
+  return path.join(LOCK_DIR, "device-" + deviceName.replaceAll(/[^A-Za-z0-9._-]/g, "_") + ".lock");
+}
+
+function acquireDeviceLock(deviceName) {
+  return acquireKernelLock(deviceLockPath(deviceName), deviceName, "设备锁被占用，排队等待…");
+}
+
+function fleetOutputForDevice(output, deviceName) {
+  const prefix = "[" + deviceName + "] ";
+  return output.split(/\r?\n/).map((line) => line.startsWith(prefix) ? line.slice(prefix.length) : line).join("\n");
+}
+
+function assertRun(job, runResult, deviceName = "") {
+  const checks = [];
+  if (Object.hasOwn(job.assert, "exit_code")) {
+    checks.push({
+      type: "exit_code",
+      expected: job.assert.exit_code,
+      actual: runResult.exit_code,
+      success: runResult.exit_code === job.assert.exit_code,
+    });
+  }
+  if (Object.hasOwn(job.assert, "output_regex")) {
+    const output = fleetOutputForDevice(runResult.stdout, deviceName);
+    checks.push({
+      type: "output_regex",
+      expected: job.assert.output_regex,
+      actual: output,
+      success: new RegExp(job.assert.output_regex, "m").test(output),
+    });
+  }
+  return { success: checks.every((check) => check.success), checks };
+}
+
+function finalize(result) {
+  const ended = Date.now();
+  result.ended_at = new Date(ended).toISOString();
+  result.duration_ms = ended - Date.parse(result.started_at);
+  result.summary = {
+    total: result.devices.length,
+    passed: result.devices.filter((device) => device.success).length,
+    failed: result.devices.filter((device) => !device.success).length,
+  };
+  result.success = result.build.success && result.summary.failed === 0;
+}
+
+async function runJob(jobName) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(jobName)) throw new Error("job 名只能包含字母、数字、点、下划线和连字符。");
+  const jobPath = path.join(JOBS_DIR, jobName + ".yaml");
+  if (!fs.existsSync(jobPath)) throw new Error("找不到任务：" + jobPath);
+  const job = parseJob(fs.readFileSync(jobPath, "utf8"));
+  const paths = preflightJobPaths(job);
+  const targets = resolveTargets(loadDevices(DEVICES_PATH), job.target);
+  const { reportDir, sequence } = allocateReportDir(jobName);
+  const started = Date.now();
+  const result = {
+    schema_version: 1,
+    job: jobName,
+    sequence,
+    target: job.target,
+    report_dir: reportDir,
+    started_at: new Date(started).toISOString(),
+    ended_at: null,
+    duration_ms: null,
+    success: false,
+    failed_step: null,
+    build: {
+      success: false,
+      status: "pending",
+      started_at: null,
+      ended_at: null,
+      duration_ms: null,
+      exit_code: null,
+      signal: null,
+      timed_out: false,
+      transport_error: false,
+      process_exit_code: null,
+      error: null,
+      log: "build.log",
+      missing_artifacts: [],
+      artifacts: [],
+    },
+    devices: [],
+    summary: { total: targets.length, passed: 0, failed: targets.length },
+  };
+  writeResult(reportDir, result);
+
+  console.log("[build] " + job.build);
+  const buildLog = path.join(reportDir, "build.log");
+  const buildArgs = ["-c", job.build];
+  let buildLock = null;
+  let buildRun;
+  let buildLockError = null;
+  let buildReleaseError = null;
+  try {
+    buildLock = await acquireKernelLock(path.join(LOCK_DIR, "build.lock"), "build", "构建锁被占用，排队等待…");
+    try {
+      buildRun = runCommand("sh", buildArgs, { cwd: REPO_ROOT });
+    } catch (error) {
+      buildRun = failedRun("sh", buildArgs, error);
+    }
+    saveLog(buildLog, buildRun);
+
+    const missingArtifacts = [];
+    const snapshots = [];
+    let snapshotError = null;
+    if (buildRun.exit_code === 0 && !buildRun.timed_out && !buildRun.error) {
+      for (const artifact of paths.artifacts) {
+        try {
+          const stat = fs.statSync(artifact.sourcePath);
+          if (!stat.isFile()) throw new Error("产物不是普通文件：" + artifact.localPath);
+          const realSource = fs.realpathSync(artifact.sourcePath);
+          ensureInside(REPO_ROOT, path.relative(REPO_ROOT, realSource), "artifacts 源路径");
+          const snapshotPath = ensureInside(path.join(reportDir, "build-artifacts"), artifact.localPath, "报告产物路径");
+          fs.mkdirSync(path.dirname(snapshotPath), { recursive: true });
+          fs.copyFileSync(artifact.sourcePath, snapshotPath);
+          snapshots.push({
+            source: artifact.localPath,
+            path: path.relative(reportDir, snapshotPath),
+            bytes: fs.statSync(snapshotPath).size,
+          });
+        } catch (error) {
+          missingArtifacts.push(artifact.localPath);
+          snapshotError = snapshotError ?? (error instanceof Error ? error.message : String(error));
+        }
+      }
+    } else {
+      for (const artifact of paths.artifacts) {
+        if (!fs.existsSync(artifact.sourcePath)) missingArtifacts.push(artifact.localPath);
+      }
+    }
+    result.build = {
+      ...stepFromRun(buildRun, buildLog, reportDir),
+      status: "completed",
+      success: buildRun.exit_code === 0 && !buildRun.timed_out && !buildRun.error
+        && missingArtifacts.length === 0 && !snapshotError,
+      missing_artifacts: missingArtifacts,
+      artifacts: snapshots,
+      snapshot_error: snapshotError,
+      lock: { success: true, waited_ms: buildLock.waited_ms },
+    };
+  } catch (error) {
+    buildLockError = error instanceof Error ? error.message : String(error);
+    buildRun = failedRun("sh", buildArgs, error);
+    saveLog(buildLog, buildRun);
+    result.build = {
+      ...stepFromRun(buildRun, buildLog, reportDir),
+      status: "failed",
+      success: false,
+      error: buildLockError,
+      missing_artifacts: [],
+      artifacts: [],
+      lock: { success: false, waited_ms: null, error: buildLockError },
+    };
+  } finally {
+    if (buildLock) {
+      try {
+        await buildLock.release();
+      } catch (error) {
+        buildReleaseError = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+  if (buildReleaseError) {
+    result.build.success = false;
+    result.build.error = result.build.error ?? buildReleaseError;
+    result.build.release_error = buildReleaseError;
+  }
+  if (!result.build.success) {
+    result.failed_step = "build";
+    for (const device of targets) {
+      result.devices.push({ name: device.name, success: false, failed_step: "build", skipped: true });
+    }
+    finalize(result);
+    writeResult(reportDir, result);
+    console.error("build 失败；报告：" + reportDir);
+    return 1;
+  }
+
+  for (const device of targets) {
+    const deviceDir = path.join(reportDir, "devices", device.name);
+    const deviceResult = {
+      name: device.name,
+      success: false,
+      failed_step: null,
+      lock: null,
+      push: [],
+      run: null,
+      pull: [],
+      assert: null,
+    };
+    result.devices.push(deviceResult);
+    console.log("[" + device.name + "] 等待设备锁");
+    const lockStarted = Date.now();
+    let lock = null;
+    let currentStep = "lock";
+
+    try {
+      lock = await acquireDeviceLock(device.name);
+      deviceResult.lock = { success: true, duration_ms: Date.now() - lockStarted, waited_ms: lock.waited_ms };
+      currentStep = "push";
+      console.log("[" + device.name + "] push");
+      for (const [index, artifact] of paths.artifacts.entries()) {
+        const snapshot = result.build.artifacts[index];
+        if (!snapshot) throw new Error("缺少构建产物快照：" + artifact.localPath);
+        const sourcePath = path.join(reportDir, snapshot.path);
+        const pushRun = runCommand(FLEET_BIN, ["push", device.name, sourcePath, artifact.remotePath], { cwd: REPO_ROOT });
+        const logPath = path.join(deviceDir, "push-" + (deviceResult.push.length + 1) + ".log");
+        saveLog(logPath, pushRun);
+        deviceResult.push.push({
+          source: artifact.localPath,
+          snapshot: snapshot.path,
+          destination: artifact.remotePath,
+          ...stepFromRun(pushRun, logPath, reportDir),
+          success: pushRun.exit_code === 0 && !pushRun.timed_out && !pushRun.error,
+        });
+        if (!deviceResult.push.at(-1).success) break;
+      }
+
+      if (deviceResult.push.some((step) => !step.success)) {
+        deviceResult.failed_step = "push";
+        continue;
+      }
+
+      currentStep = "run";
+      console.log("[" + device.name + "] exec（超时 " + job.run.timeout + " 秒）");
+      const runTimeoutMs = (job.run.timeout + 10) * 1000;
+      const runProcess = runCommand(FLEET_BIN, [
+        "exec", device.name, "--json", "--timeout", String(job.run.timeout), "--", "sh", "-c", job.run.command,
+      ], { cwd: REPO_ROOT, timeout: runTimeoutMs });
+      const runResult = parseFleetExecResult(runProcess, device.name);
+      const runLog = path.join(deviceDir, "run.log");
+      saveLog(runLog, runResult);
+      deviceResult.run = stepFromRun(runResult, runLog, reportDir);
+      if (!deviceResult.run.success) deviceResult.failed_step = "run";
+
+      currentStep = "pull";
+      console.log("[" + device.name + "] pull");
+      for (const [remotePath, localPath] of Object.entries(job.collect)) {
+        const destination = ensureInside(path.join(deviceDir, "artifacts"), localPath, "collect 目标路径");
+        fs.mkdirSync(path.dirname(destination), { recursive: true });
+        const pullRun = runCommand(FLEET_BIN, ["pull", device.name, remotePath, destination], { cwd: REPO_ROOT });
+        const logPath = path.join(deviceDir, "pull-" + (deviceResult.pull.length + 1) + ".log");
+        saveLog(logPath, pullRun);
+        deviceResult.pull.push({
+          source: remotePath,
+          destination: path.relative(reportDir, destination),
+          ...stepFromRun(pullRun, logPath, reportDir),
+          success: pullRun.exit_code === 0 && !pullRun.timed_out && !pullRun.error,
+        });
+      }
+
+      currentStep = "assert";
+      const assertStarted = Date.now();
+      const asserted = assertRun(job, runResult, device.name);
+      const assertEnded = Date.now();
+      const assertLog = path.join(deviceDir, "assert.log");
+      fs.writeFileSync(assertLog, JSON.stringify(asserted, null, 2) + "\n");
+      deviceResult.assert = {
+        ...asserted,
+        started_at: new Date(assertStarted).toISOString(),
+        ended_at: new Date(assertEnded).toISOString(),
+        duration_ms: assertEnded - assertStarted,
+        log: path.relative(reportDir, assertLog),
+      };
+
+      if (deviceResult.failed_step === null && deviceResult.pull.some((step) => !step.success)) deviceResult.failed_step = "pull";
+      else if (deviceResult.failed_step === null && !deviceResult.assert.success) deviceResult.failed_step = "assert";
+      deviceResult.success = deviceResult.failed_step === null;
+    } catch (error) {
+      deviceResult.failed_step = deviceResult.failed_step ?? (currentStep === "lock" ? "internal" : currentStep);
+      deviceResult.error = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (lock) {
+        try {
+          await lock.release();
+        } catch (error) {
+          deviceResult.failed_step = deviceResult.failed_step ?? "internal";
+          deviceResult.success = false;
+          deviceResult.error = deviceResult.error ?? (error instanceof Error ? error.message : String(error));
+          deviceResult.lock = { ...(deviceResult.lock ?? {}), release_error: deviceResult.error };
+        }
+      }
+      console.log("[" + device.name + "] " + (deviceResult.success ? "通过" : "失败：" + deviceResult.failed_step));
+      writeResult(reportDir, result);
+    }
+  }
+
+  finalize(result);
+  result.failed_step = result.success ? null : "device";
+  writeResult(reportDir, result);
+  console.log("汇总：" + result.summary.passed + "/" + result.summary.total + " 台通过；报告：" + reportDir);
+  return result.success ? 0 : 1;
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
+    console.log(HELP);
+    return 0;
+  }
+  if (args.length !== 2 || args[0] !== "run") {
+    console.error(HELP);
+    return 2;
+  }
+  return runJob(args[1]);
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  try {
+    process.exitCode = await main();
+  } catch (error) {
+    console.error("verify: " + (error instanceof Error ? error.message : String(error)));
+    process.exitCode = 2;
+  }
+}
+
+export { acquireDeviceLock, assertRun, parseJob };

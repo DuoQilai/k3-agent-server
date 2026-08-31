@@ -1,0 +1,12 @@
+target: tag:dev
+build: test "$(uname -m)" = riscv64 && mkdir -p verify/build && cc -static -O2 -Wall -Wextra verify/examples/hello.c -o verify/build/hello
+artifacts:
+  verify/build/hello: /tmp/k3-verify-hello
+run:
+  command: set -e; chmod +x /tmp/k3-verify-hello; /tmp/k3-verify-hello > /tmp/k3-verify-hello.out; cat /tmp/k3-verify-hello.out
+  timeout: 30
+collect:
+  /tmp/k3-verify-hello.out: hello.out
+assert:
+  exit_code: 0
+  output_regex: '^Hello, RISC-V verification!$'
