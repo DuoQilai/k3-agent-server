@@ -230,7 +230,8 @@ curl -fsS http://127.0.0.1:8080/v1/chat/completions \
 在实际访问服务的设备执行：
 
 ```bash
-ssh -N -L 127.0.0.1:8080:127.0.0.1:8080 <K3_USER>@<K3_IP>
+ssh -N -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:8080:127.0.0.1:8080 <K3_USER>@<K3_IP>
 ```
 
 然后访问设备上的客户端使用 `http://127.0.0.1:8080/v1`。不要把 K3 的 8080 直接绑定到局域网地址。
