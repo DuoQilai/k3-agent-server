@@ -13,6 +13,7 @@ fi
 
 exec ssh -4 -N \
   -L "127.0.0.1:${LOCAL_PORT}:127.0.0.1:${REMOTE_PORT}" \
+  -o ExitOnForwardFailure=yes \
   -o ServerAliveInterval=30 \
   -o ServerAliveCountMax=3 \
   "${K3_USER}@${K3_IP}"

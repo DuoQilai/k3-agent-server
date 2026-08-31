@@ -1,6 +1,6 @@
 # Agent Template
 
-复制本目录并改成新 Agent 的名称，例如 agents/openclaw/。
+复制本目录并改成新 Agent 的名称，例如 agents/example-agent/。
 
 - install.sh：安装固定版本的 Agent 和运行时依赖，必须支持 --help。
 - agent.env.example：记录该 Agent 的配置模板，不要写入真实密钥。

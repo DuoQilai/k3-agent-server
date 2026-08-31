@@ -12,10 +12,13 @@ fleet 设备中控 MVP。K3 上运行模型服务、多个 Agent 和共享的设
           ▼
     K3 Pico-ITX / Bianbu Linux
     ├── DSH Agent              127.0.0.1:3080
+    ├── OpenClaw Gateway（可选）127.0.0.1:18789
     ├── llama-server 模型 API  127.0.0.1:8080/v1
     └── fleet CLI / MCP        SSH、scp、stdio
 
 - DSH 负责对话、工作区、文件、Shell 和工具调用；
+- OpenClaw 是独立运维的可选 Agent，只有取得经审计的锁定交付物后才能安装，且不由
+  仓库顶层脚本管理；
 - llama-server 负责加载 GGUF 模型并提供 OpenAI-compatible API；
 - 后续 Agent 从 3081 起分配端口，并共享 8080 模型 API；
 - fleet 通过 SSH 管理其他 RISC-V 开发板，当前 MCP 使用 stdio；
@@ -23,8 +26,9 @@ fleet 设备中控 MVP。K3 上运行模型服务、多个 Agent 和共享的设
 
 ## 2. 首次部署
 
-项目提供一键部署和手动部署两条正式路径。两条路径使用相同的固定版本、
-目录、端口和 systemd unit。
+项目为 llama-server 和 DSH 两个核心服务提供一键部署和手动部署路径。两条路径使用
+相同的固定版本、目录、端口和 systemd unit；可选 OpenClaw 按独立文档检查交付物
+门槛，并在受控安装后完成配置和验收。
 
 ### 2.1 一键部署
 
@@ -57,6 +61,9 @@ bash scripts/status.sh
 
 然后阅读 [DSH 模型接入与切换](docs/system-integration/dsh-model-integration.md)，
 在 DSH 中添加本地模型提供方。
+
+`scripts/deploy.sh` 不安装 OpenClaw。需要该可选组件时，在核心服务部署完成后单独
+阅读 [OpenClaw 交付物验证与运行验收](docs/agent-service/openclaw-deployment.md)。
 
 ### 2.2 手动部署
 
@@ -98,7 +105,10 @@ K3_IP=<K3_IP> K3_USER=<K3_USER> bash scripts/tunnel.sh
 没有项目副本时，也可以直接执行：
 
 ~~~bash
-ssh -N -L 127.0.0.1:3080:127.0.0.1:3080 <K3_USER>@<K3_IP>
+ssh -N \
+  -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:3080:127.0.0.1:3080 \
+  <K3_USER>@<K3_IP>
 ~~~
 
 ## 4. 日常命令
@@ -110,6 +120,9 @@ bash scripts/start.sh
 bash scripts/status.sh
 bash scripts/stop.sh
 ~~~
+
+这些命令只管理 llama-server 和 DSH。OpenClaw 使用自己的 `openclaw gateway ...`
+命令，详见[运维手册](docs/operations-manual.md)。
 
 DSH 的主 unit 是 agent-dsh.service，dsh-web.service 是兼容旧名称：
 
@@ -151,6 +164,7 @@ DSH 与 Codex CLI 的配置示例见[fleet MCP 文档](fleet/mcp/README.md)。
 | [基础环境](docs/base-environment/README.md) | Bianbu、工具、权限和 systemd 前置条件 |
 | [模型服务部署](docs/model-service/ds-model-service-deployment.md) | 安装 llama-server、下载模型并建立 8080 服务 |
 | [DSH 部署](docs/agent-service/dsh-deployment.md) | 安装 DSH、兼容层并建立 3080 服务 |
+| [OpenClaw 交付物与验收](docs/agent-service/openclaw-deployment.md) | 检查锁定交付物门槛，并在受控安装后配置和验收 OpenClaw |
 | [DSH 模型接入与切换](docs/system-integration/dsh-model-integration.md) | 添加本地或云端提供方、选择模型和验证 |
 | [应用入口](docs/application/README.md) | 当前 Web UI 入口和应用边界 |
 | [运维手册](docs/operations-manual.md) | 下次访问、启停、日志、升级和故障排查 |
@@ -171,6 +185,7 @@ Fleet MCP（需要时）→ 运维手册。
 | 模型 | deepseek-r1-distill-qwen-1.5b-q4_0.gguf |
 | 模型 API | http://127.0.0.1:8080/v1 |
 | DSH Web | http://127.0.0.1:3080 |
+| OpenClaw（可选） | 主包 v2026.4.12-riscv64.1，Node.js v22.22.0，受控安装后使用 127.0.0.1:18789 |
 
 DSH 的固定 lockfile 位于 agents/dsh/pnpm-lock.yaml。一键部署找到它时使用
 frozen-lockfile；没有时会使用兼容回退流程，并提示首次部署成功后将生成的

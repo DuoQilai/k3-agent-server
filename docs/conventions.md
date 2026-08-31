@@ -22,7 +22,8 @@
 |---|---|---|
 | 8080 | llama-server 模型 API | 使用中 |
 | 3080 | DSH Agent Web | 使用中 |
-| 3081 | OpenClaw 或其他 Agent | 预留 |
+| 3081 | 后续 Agent Web | 预留 |
+| 18789 | OpenClaw Gateway | 可选组件使用中 |
 | 7080 | Fleet MCP TCP 入口 | 预留；当前使用 stdio |
 
 K3 上的 HTTP 服务默认只绑定 127.0.0.1。访问设备使用 SSH local forwarding，
@@ -34,6 +35,7 @@ K3 上的 HTTP 服务默认只绑定 127.0.0.1。访问设备使用 SSH local fo
 - 新 Agent 使用 agent-<name>.service；
 - DSH 的主 unit 是 agent-dsh.service；
 - dsh-web.service 是旧部署兼容别名，已有运维命令可以继续使用；
+- OpenClaw 默认使用其 CLI 生成的 openclaw-gateway.service，不由顶层安装脚本复制；
 - 新 Agent 的 unit 应放在该 Agent 目录的 systemd/ 下，由顶层安装脚本统一复制。
 
 ## 4. Agent 配置
@@ -67,7 +69,7 @@ DSH 当前安装器将配置模板复制到：
 
 顶层脚本必须保持幂等。已有旧版 dsh-web.service 的设备再次执行 deploy.sh 时，
 脚本会停止旧 unit、安装 agent-dsh.service 并保留 dsh-web.service 别名，不要求手工
-迁移。
+迁移。顶层脚本只管理 llama-server 和 DSH；可选 OpenClaw 使用自己的 CLI 独立运维。
 
 ## 6. Fleet 安全约定
 
